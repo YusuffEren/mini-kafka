@@ -1,0 +1,8 @@
+/bin/
+/tmp/
+*.out
+*.test
+coverage.html
+/data/
+.env
+*.log
