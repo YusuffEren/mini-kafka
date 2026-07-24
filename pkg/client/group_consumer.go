@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/yusuf/mini-kafka/internal/coordinator"
-	"github.com/yusuf/mini-kafka/internal/protocol"
-	"github.com/yusuf/mini-kafka/internal/storage"
+	"github.com/YusuffEren/mini-kafka/internal/coordinator"
+	"github.com/YusuffEren/mini-kafka/internal/protocol"
+	"github.com/YusuffEren/mini-kafka/internal/storage"
 )
 
 // TopicPartition identifies a specific partition of a topic.

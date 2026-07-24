@@ -3,7 +3,7 @@ package broker
 import (
 	"testing"
 
-	"github.com/yusuf/mini-kafka/internal/storage"
+	"github.com/YusuffEren/mini-kafka/internal/storage"
 )
 
 func TestMurmur2_Kafka_Test_Vectors(t *testing.T) {

@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yusuf/mini-kafka/internal/protocol"
-	"github.com/yusuf/mini-kafka/internal/server"
+	"github.com/YusuffEren/mini-kafka/internal/protocol"
+	"github.com/YusuffEren/mini-kafka/internal/server"
 )
 
 type GroupState string
@@ -79,6 +79,9 @@ func (gc *GroupCoordinator) Close() {
 		close(gc.closeCh)
 	}
 	gc.wg.Wait()
+	if gc.offsetStore != nil {
+		_ = gc.offsetStore.Close()
+	}
 }
 
 func (gc *GroupCoordinator) sessionTimeoutLoop() {

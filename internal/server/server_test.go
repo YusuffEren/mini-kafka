@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yusuf/mini-kafka/internal/protocol"
+	"github.com/YusuffEren/mini-kafka/internal/protocol"
 )
 
 // startServer runs a server on a random port and returns the server and the
@@ -15,7 +15,7 @@ import (
 func startServer(t *testing.T, mux *Mux) (*Server, string) {
 	t.Helper()
 
-	srv := NewServer(":0", mux)
+	srv := NewServer(":0", mux, 1024)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- srv.Start()
@@ -297,7 +297,7 @@ func TestServer_bilinmeyen_api_key_UnsupportedVersion(t *testing.T) {
 
 func TestServer_gecersiz_adres_Start_hata(t *testing.T) {
 	mux := NewMux()
-	srv := NewServer("not-a-valid-tcp-address!!", mux)
+	srv := NewServer("not-a-valid-tcp-address!!", mux, 1024)
 	if err := srv.Start(); err == nil {
 		t.Fatal("Start succeeded with invalid address, want error")
 	}

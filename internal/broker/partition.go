@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/yusuf/mini-kafka/internal/storage"
+	"github.com/YusuffEren/mini-kafka/internal/storage"
 )
 
 // ErrInvalidTopicName is returned when a topic name fails validation.

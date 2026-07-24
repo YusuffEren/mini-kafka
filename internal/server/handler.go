@@ -4,7 +4,7 @@
 package server
 
 import (
-	"github.com/yusuf/mini-kafka/internal/protocol"
+	"github.com/YusuffEren/mini-kafka/internal/protocol"
 )
 
 // Protocol error codes used by the dispatch layer. These mirror the Kafka

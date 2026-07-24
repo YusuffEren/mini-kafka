@@ -5,8 +5,8 @@ import (
 	"io"
 	"sync"
 
-	"github.com/yusuf/mini-kafka/internal/protocol"
-	"github.com/yusuf/mini-kafka/internal/storage"
+	"github.com/YusuffEren/mini-kafka/internal/protocol"
+	"github.com/YusuffEren/mini-kafka/internal/storage"
 )
 
 // ProduceRequestItem represents an in-flight acks=all Produce request awaiting HW progress.

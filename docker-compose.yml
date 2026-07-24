@@ -1,46 +1,13 @@
-version: '3.8'
-
 services:
-  mini-kafka-1:
+  mini-kafka:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: mini-kafka-1
+    container_name: mini-kafka
     ports:
       - "9092:9092"
-    environment:
-      - BROKER_ID=1
-      - BROKER_PORT=9092
     volumes:
-      - mini-kafka-data-1:/var/lib/mini-kafka
-
-  mini-kafka-2:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: mini-kafka-2
-    ports:
-      - "9093:9093"
-    environment:
-      - BROKER_ID=2
-      - BROKER_PORT=9093
-    volumes:
-      - mini-kafka-data-2:/var/lib/mini-kafka
-
-  mini-kafka-3:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: mini-kafka-3
-    ports:
-      - "9094:9094"
-    environment:
-      - BROKER_ID=3
-      - BROKER_PORT=9094
-    volumes:
-      - mini-kafka-data-3:/var/lib/mini-kafka
+      - mini-kafka-data:/var/lib/mini-kafka
 
 volumes:
-  mini-kafka-data-1:
-  mini-kafka-data-2:
-  mini-kafka-data-3:
+  mini-kafka-data:

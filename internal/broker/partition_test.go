@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yusuf/mini-kafka/internal/storage"
+	"github.com/YusuffEren/mini-kafka/internal/storage"
 )
 
 func TestPartition_Append_and_Read(t *testing.T) {

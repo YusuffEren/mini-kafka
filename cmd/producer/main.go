@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yusuf/mini-kafka/pkg/client"
+	"github.com/YusuffEren/mini-kafka/pkg/client"
 )
 
 func main() {

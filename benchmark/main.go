@@ -10,9 +10,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/yusuf/mini-kafka/internal/broker"
-	"github.com/yusuf/mini-kafka/internal/config"
-	"github.com/yusuf/mini-kafka/pkg/client"
+	"github.com/YusuffEren/mini-kafka/internal/broker"
+	"github.com/YusuffEren/mini-kafka/internal/config"
+	"github.com/YusuffEren/mini-kafka/pkg/client"
 )
 
 type BenchmarkResult struct {

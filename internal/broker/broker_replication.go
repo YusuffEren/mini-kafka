@@ -7,10 +7,10 @@ import (
 	"net"
 	"time"
 
-	"github.com/yusuf/mini-kafka/internal/config"
-	"github.com/yusuf/mini-kafka/internal/protocol"
-	"github.com/yusuf/mini-kafka/internal/replication"
-	"github.com/yusuf/mini-kafka/internal/storage"
+	"github.com/YusuffEren/mini-kafka/internal/config"
+	"github.com/YusuffEren/mini-kafka/internal/protocol"
+	"github.com/YusuffEren/mini-kafka/internal/replication"
+	"github.com/YusuffEren/mini-kafka/internal/storage"
 )
 
 // errProduceTimeout is returned when an acks=all produce exceeds TimeoutMs.

@@ -10,12 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yusuf/mini-kafka/internal/config"
-	"github.com/yusuf/mini-kafka/internal/coordinator"
-	"github.com/yusuf/mini-kafka/internal/protocol"
-	"github.com/yusuf/mini-kafka/internal/replication"
-	"github.com/yusuf/mini-kafka/internal/server"
-	"github.com/yusuf/mini-kafka/internal/storage"
+	"github.com/YusuffEren/mini-kafka/internal/config"
+	"github.com/YusuffEren/mini-kafka/internal/coordinator"
+	"github.com/YusuffEren/mini-kafka/internal/protocol"
+	"github.com/YusuffEren/mini-kafka/internal/replication"
+	"github.com/YusuffEren/mini-kafka/internal/server"
+	"github.com/YusuffEren/mini-kafka/internal/storage"
 )
 
 const (
@@ -70,7 +70,10 @@ func New(cfg *config.Config) (*Broker, error) {
 		return nil, fmt.Errorf("broker: metadata manager: %w", err)
 	}
 
-	offsetStore := coordinator.NewOffsetStore(cfg.Broker.DataDir)
+	offsetStore := coordinator.NewOffsetStore(cfg.Broker.DataDir, cfg.Group.OffsetsTopicPartitions)
+	if err := offsetStore.Start(); err != nil {
+		return nil, fmt.Errorf("broker: offset store: %w", err)
+	}
 	gc := coordinator.NewGroupCoordinator(offsetStore)
 
 	localID := int32(cfg.Broker.ID)
@@ -120,7 +123,7 @@ func New(cfg *config.Config) (*Broker, error) {
 	b.mux = mux
 
 	addr := fmt.Sprintf("%s:%d", cfg.Broker.Host, cfg.Broker.Port)
-	srv := server.NewServer(addr, mux)
+	srv := server.NewServer(addr, mux, cfg.Broker.MaxConnections)
 	b.server = srv
 
 	return b, nil
@@ -233,7 +236,7 @@ func (b *Broker) getOrCreateTopic(name string, requestedPartitions int32) (*Topi
 }
 
 func (b *Broker) registerListener(topic string, partitionID int32) chan struct{} {
-	ch := make(chan struct{}, 1)
+	ch := make(chan struct{}, 10)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -340,6 +343,15 @@ func (b *Broker) handleProduce(req *protocol.RequestFrame) (*protocol.ResponseFr
 					topicResp.Partitions[j] = partResp
 					continue
 				}
+			}
+
+			// Reject oversized record sets before decoding to avoid wasting
+			// work on payloads that exceed the configured max message bytes.
+			// MaxMessageBytes <= 0 means unlimited (no limit enforced).
+			if b.config.Log.MaxMessageBytes > 0 && int64(len(pReq.RecordSet)) > b.config.Log.MaxMessageBytes {
+				partResp.ErrorCode = server.ErrMessageTooLarge
+				topicResp.Partitions[j] = partResp
+				continue
 			}
 
 			buf := bytes.NewReader(pReq.RecordSet)

@@ -1,15 +1,12 @@
 package coordinator
 
 import (
-	"bytes"
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/yusuf/mini-kafka/internal/protocol"
-	"github.com/yusuf/mini-kafka/internal/server"
+	"github.com/YusuffEren/mini-kafka/internal/protocol"
+	"github.com/YusuffEren/mini-kafka/internal/server"
 )
 
 func TestAssignors(t *testing.T) {
@@ -30,7 +27,7 @@ func TestAssignors(t *testing.T) {
 }
 
 func TestOffsetStore(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	store.Commit("group-1", "topic-a", 0, 100)
 
 	if got := store.Fetch("group-1", "topic-a", 0); got != 100 {
@@ -42,7 +39,7 @@ func TestOffsetStore(t *testing.T) {
 }
 
 func TestGroupCoordinator_Join_and_Sync(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -183,20 +180,22 @@ func TestGetAssignor(t *testing.T) {
 
 func TestOffsetStore_persistence_and_recovery(t *testing.T) {
 	dir := t.TempDir()
-	store := NewOffsetStore(dir)
+	store := NewOffsetStore(dir, 4)
+	if err := store.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
 	store.Commit("group-1", "topic-a", 0, 42)
 	store.Commit("group-1", "topic-a", 1, 99)
-
-	path := filepath.Join(dir, "meta", "offsets.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("offsets file not written: %v", err)
-	}
-	if !bytes.Contains(data, []byte("42")) || !bytes.Contains(data, []byte("99")) {
-		t.Errorf("offsets file missing committed offsets: %s", data)
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 
-	store2 := NewOffsetStore(dir)
+	store2 := NewOffsetStore(dir, 4)
+	if err := store2.Start(); err != nil {
+		t.Fatalf("Start recovery: %v", err)
+	}
+	defer func() { _ = store2.Close() }()
+
 	if got := store2.Fetch("group-1", "topic-a", 0); got != 42 {
 		t.Errorf("recovered offset = %d, want 42", got)
 	}
@@ -207,14 +206,18 @@ func TestOffsetStore_persistence_and_recovery(t *testing.T) {
 
 func TestOffsetStore_load_missing_file_is_noop(t *testing.T) {
 	dir := t.TempDir()
-	store := NewOffsetStore(dir)
+	store := NewOffsetStore(dir, 4)
+	if err := store.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = store.Close() }()
 	if got := store.Fetch("group-1", "topic-a", 0); got != -1 {
 		t.Errorf("Fetch uncommitted = %d, want -1", got)
 	}
 }
 
 func TestOffsetStore_wrapper_commit_and_fetch(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -225,7 +228,7 @@ func TestOffsetStore_wrapper_commit_and_fetch(t *testing.T) {
 }
 
 func TestGroupCoordinator_session_timeout_removes_member(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -270,7 +273,7 @@ func TestGroupCoordinator_session_timeout_removes_member(t *testing.T) {
 }
 
 func TestGroupCoordinator_session_timeout_rebalances_remaining(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -323,7 +326,7 @@ func TestGroupCoordinator_session_timeout_rebalances_remaining(t *testing.T) {
 }
 
 func TestHeartbeat_unknown_group(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -334,7 +337,7 @@ func TestHeartbeat_unknown_group(t *testing.T) {
 }
 
 func TestHeartbeat_wrong_generation(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -361,7 +364,7 @@ func TestHeartbeat_wrong_generation(t *testing.T) {
 }
 
 func TestHeartbeat_unknown_member(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -388,7 +391,7 @@ func TestHeartbeat_unknown_member(t *testing.T) {
 }
 
 func TestHeartbeat_rebalance_in_progress(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -415,7 +418,7 @@ func TestHeartbeat_rebalance_in_progress(t *testing.T) {
 }
 
 func TestHeartbeat_successful_resets_timeout(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -460,7 +463,7 @@ func TestHeartbeat_successful_resets_timeout(t *testing.T) {
 }
 
 func TestLeaveGroup_unknown_group(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -471,7 +474,7 @@ func TestLeaveGroup_unknown_group(t *testing.T) {
 }
 
 func TestLeaveGroup_unknown_member(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -495,7 +498,7 @@ func TestLeaveGroup_unknown_member(t *testing.T) {
 }
 
 func TestLeaveGroup_last_member_empties_group(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -533,7 +536,7 @@ func TestLeaveGroup_last_member_empties_group(t *testing.T) {
 }
 
 func TestLeaveGroup_leader_leaves_triggers_rebalance(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -588,7 +591,7 @@ func TestLeaveGroup_leader_leaves_triggers_rebalance(t *testing.T) {
 }
 
 func TestSyncGroup_unknown_group(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -607,7 +610,7 @@ func TestSyncGroup_unknown_group(t *testing.T) {
 }
 
 func TestSyncGroup_wrong_generation(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -637,7 +640,7 @@ func TestSyncGroup_wrong_generation(t *testing.T) {
 }
 
 func TestSyncGroup_unknown_member(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -667,7 +670,7 @@ func TestSyncGroup_unknown_member(t *testing.T) {
 }
 
 func TestSyncGroup_non_leader_waits_until_context_cancel(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -716,7 +719,7 @@ func TestSyncGroup_non_leader_waits_until_context_cancel(t *testing.T) {
 }
 
 func TestSyncGroup_leader_assignment_with_unknown_member_is_skipped(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -757,7 +760,7 @@ func TestSyncGroup_leader_assignment_with_unknown_member_is_skipped(t *testing.T
 }
 
 func TestJoinGroup_empty_group_id(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -778,7 +781,7 @@ func TestJoinGroup_empty_group_id(t *testing.T) {
 }
 
 func TestJoinGroup_existing_member_rejoins(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -815,7 +818,7 @@ func TestJoinGroup_existing_member_rejoins(t *testing.T) {
 }
 
 func TestJoinGroup_second_member_joins(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -849,7 +852,7 @@ func TestJoinGroup_second_member_joins(t *testing.T) {
 }
 
 func TestJoinGroup_leader_receives_members(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	defer gc.Close()
 
@@ -908,7 +911,7 @@ func TestDecodeAssignment_invalid_data_returns_error(t *testing.T) {
 }
 
 func TestGroupCoordinator_Close_idempotent(t *testing.T) {
-	store := NewOffsetStore()
+	store := NewOffsetStore("", 1)
 	gc := NewGroupCoordinator(store)
 	gc.Close()
 	gc.Close()

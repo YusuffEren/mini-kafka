@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/yusuf/mini-kafka/internal/protocol"
+	"github.com/YusuffEren/mini-kafka/internal/protocol"
 )
 
 // ---------------------------------------------------------------------------

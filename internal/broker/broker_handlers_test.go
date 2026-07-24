@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yusuf/mini-kafka/internal/config"
-	"github.com/yusuf/mini-kafka/internal/protocol"
-	"github.com/yusuf/mini-kafka/internal/replication"
-	"github.com/yusuf/mini-kafka/internal/server"
-	"github.com/yusuf/mini-kafka/internal/storage"
+	"github.com/YusuffEren/mini-kafka/internal/config"
+	"github.com/YusuffEren/mini-kafka/internal/protocol"
+	"github.com/YusuffEren/mini-kafka/internal/replication"
+	"github.com/YusuffEren/mini-kafka/internal/server"
+	"github.com/YusuffEren/mini-kafka/internal/storage"
 )
 
 // testConfigAutoCreateDisabled returns a config with auto-create turned off.

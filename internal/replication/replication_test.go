@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yusuf/mini-kafka/internal/replication"
+	"github.com/YusuffEren/mini-kafka/internal/replication"
 )
 
 func TestISRTracker_HW_Calculation(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/yusuf/mini-kafka/internal/protocol"
+	"github.com/YusuffEren/mini-kafka/internal/protocol"
 )
 
 // PartitionAssignment represents a single topic's assigned partition IDs.

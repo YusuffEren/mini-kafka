@@ -4,26 +4,33 @@ import (
 	"context"
 	"net"
 	"sync"
+	"sync/atomic"
 
-	"github.com/yusuf/mini-kafka/internal/protocol"
+	"github.com/YusuffEren/mini-kafka/internal/protocol"
 )
 
 // Server accepts TCP connections and processes mini-kafka protocol frames.
 type Server struct {
-	addr     string
-	listener net.Listener
-	mux      *Mux
-	done     chan struct{}
-	wg       sync.WaitGroup
+	addr        string
+	listener    net.Listener
+	mux         *Mux
+	done        chan struct{}
+	wg          sync.WaitGroup
+	maxConns    int64
+	activeConns int64
 }
 
 // NewServer creates a server that will listen on addr (e.g. ":9092"). The
 // provided mux is used to dispatch request frames to registered handlers.
-func NewServer(addr string, mux *Mux) *Server {
+// maxConnections limits the number of concurrently active client connections;
+// connections accepted beyond that limit are immediately closed. A value of
+// zero or less disables the limit (unlimited connections).
+func NewServer(addr string, mux *Mux, maxConnections int) *Server {
 	return &Server{
-		addr: addr,
-		mux:  mux,
-		done: make(chan struct{}),
+		addr:     addr,
+		mux:      mux,
+		done:     make(chan struct{}),
+		maxConns: int64(maxConnections),
 	}
 }
 
@@ -49,6 +56,14 @@ func (s *Server) Start() error {
 			default:
 			}
 			return err
+		}
+
+		// Reject connections that would exceed the configured concurrency
+		// limit. The connection is accepted from the listener (so the kernel
+		// backlog drains) but immediately closed without spawning a handler.
+		if s.maxConns > 0 && atomic.LoadInt64(&s.activeConns) >= s.maxConns {
+			_ = conn.Close()
+			continue
 		}
 
 		s.wg.Add(1)
@@ -100,6 +115,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // handleConn processes frames from a single TCP connection until the client
 // disconnects or a read/write error occurs. It runs in its own goroutine.
 func (s *Server) handleConn(conn net.Conn) {
+	atomic.AddInt64(&s.activeConns, 1)
+	defer atomic.AddInt64(&s.activeConns, -1)
+
 	defer conn.Close()
 
 	for {
