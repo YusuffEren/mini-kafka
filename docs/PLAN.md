@@ -37,20 +37,20 @@
 - [x] T4.5 Faz 4 DoD kontrolü
 
 ## Faz 5: Replikasyon ve ISR
-- [ ] T5.1 Replica State + ISR
-- [ ] T5.2 High Watermark
-- [ ] T5.3 Follower
-- [ ] T5.4 Leader
-- [ ] T5.5 Purgatory
-- [ ] T5.6 Leader Failover + Leader Epoch
-- [ ] T5.7 Faz 5 DoD kontrolü
+- [x] T5.1 Replica State + ISR
+- [x] T5.2 High Watermark
+- [x] T5.3 Follower
+- [x] T5.4 Leader
+- [x] T5.5 Purgatory
+- [x] T5.6 Leader Failover + Leader Epoch
+- [x] T5.7 Faz 5 DoD kontrolü
 
 ## Faz 6: Benchmark ve Dokümantasyon
-- [ ] T6.1 Benchmark harness
-- [ ] T6.2 Latency histogram
-- [ ] T6.3 Kafka docker-compose
-- [ ] T6.4 Sonuç görselleştirme
-- [ ] T6.5 docs/BENCHMARK.md
-- [ ] T6.6 README
-- [ ] T6.7 Son güvenlik taraması
-- [ ] T6.8 Son commit
+- [x] T6.1 Benchmark harness
+- [x] T6.2 Latency histogram
+- [x] T6.3 Kafka docker-compose
+- [x] T6.4 Sonuç görselleştirme
+- [x] T6.5 docs/BENCHMARK.md
+- [x] T6.6 README
+- [x] T6.7 Son güvenlik taraması
+- [x] T6.8 Son commit
