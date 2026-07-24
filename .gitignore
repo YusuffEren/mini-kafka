@@ -9,3 +9,4 @@ cover
 .env
 *.log
 benchmark_results.json
+*.exe

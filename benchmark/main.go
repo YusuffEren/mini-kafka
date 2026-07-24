@@ -85,18 +85,35 @@ func main() {
 
 	var results []BenchmarkResult
 
-	// Scenario 1: Single Producer 1KB messages
-	res1 := runProducerBenchmark(addrStr, "Single Producer 1KB (acks=1)", 10000, 1024)
+	// Scenario 1: Single Producer 1KB messages (acks=1)
+	res1 := runProducerBenchmark(addrStr, "Single Producer 1KB (acks=1)", 10000, 1024, client.DefaultProducerConfig())
 	results = append(results, res1)
 
 	// Scenario 2: Message Size Impact (100B, 1KB, 10KB)
-	res2a := runProducerBenchmark(addrStr, "Producer 100B (acks=1)", 10000, 100)
-	res2b := runProducerBenchmark(addrStr, "Producer 10KB (acks=1)", 5000, 10240)
+	res2a := runProducerBenchmark(addrStr, "Producer 100B (acks=1)", 10000, 100, client.DefaultProducerConfig())
+	res2b := runProducerBenchmark(addrStr, "Producer 10KB (acks=1)", 5000, 10240, client.DefaultProducerConfig())
 	results = append(results, res2a, res2b)
 
 	// Scenario 3: Consumer Throughput
 	res3 := runConsumerBenchmark(addrStr, "Group Consumer Poll", 10000)
 	results = append(results, res3)
+
+	// Scenario 4: Acks Impact (acks=0 vs acks=all)
+	cfgAcks0 := client.DefaultProducerConfig()
+	cfgAcks0.Acks = 0
+	res4a := runProducerBenchmark(addrStr, "Producer 1KB (acks=0)", 10000, 1024, cfgAcks0)
+	cfgAcksAll := client.DefaultProducerConfig()
+	cfgAcksAll.Acks = -1
+	res4b := runProducerBenchmark(addrStr, "Producer 1KB (acks=all)", 10000, 1024, cfgAcksAll)
+	results = append(results, res4a, res4b)
+
+	// Scenario 5: Batching Impact (LingerMs=5 vs LingerMs=0)
+	cfgBatch := client.DefaultProducerConfig()
+	cfgBatch.LingerMs = 5
+	cfgBatch.BatchSize = 65536
+	res5a := runProducerBenchmark(addrStr, "Producer 1KB (linger=5ms, batch=64KB)", 10000, 1024, cfgBatch)
+	res5b := runProducerBenchmark(addrStr, "Producer 1KB (linger=0ms, batch=16KB)", 10000, 1024, client.DefaultProducerConfig())
+	results = append(results, res5a, res5b)
 
 	data, err := json.MarshalIndent(results, "", "  ")
 	if err != nil {
@@ -112,9 +129,9 @@ func main() {
 	fmt.Printf("\n✅ Benchmark completed! Results written to %s\n", *outDir)
 }
 
-func runProducerBenchmark(addr, scenario string, count, payloadSize int) BenchmarkResult {
+func runProducerBenchmark(addr, scenario string, count, payloadSize int, cfg client.ProducerConfig) BenchmarkResult {
 	fmt.Printf("Running: %s ... ", scenario)
-	prod, err := client.NewProducer([]string{addr}, client.DefaultProducerConfig())
+	prod, err := client.NewProducer([]string{addr}, cfg)
 	if err != nil {
 		fmt.Printf("producer init err: %v\n", err)
 		return BenchmarkResult{Scenario: scenario}
@@ -193,9 +210,12 @@ func runConsumerBenchmark(addr, scenario string, count int) BenchmarkResult {
 
 	start := time.Now()
 	consumed := 0
+	var latencies []float64
 
 	for consumed < count {
+		t0 := time.Now()
 		msgs, err := gc.Poll(ctx, 1*time.Second)
+		latencies = append(latencies, float64(time.Since(t0).Microseconds())/1000.0)
 		if err != nil || len(msgs) == 0 {
 			break
 		}
@@ -211,16 +231,18 @@ func runConsumerBenchmark(addr, scenario string, count int) BenchmarkResult {
 	msgPerSec := float64(consumed) / (float64(durMs) / 1000.0)
 	mbPerSec := (float64(consumed*1024) / (1024.0 * 1024.0)) / (float64(durMs) / 1000.0)
 
+	sort.Float64s(latencies)
+
 	res := BenchmarkResult{
 		Scenario:      scenario,
 		DurationMs:    durMs,
 		TotalMessages: consumed,
 		MsgPerSec:     msgPerSec,
 		MBPerSec:      mbPerSec,
-		P50LatencyMs:  0.1,
-		P95LatencyMs:  0.5,
-		P99LatencyMs:  1.0,
-		P999LatencyMs: 2.0,
+		P50LatencyMs:  percentile(latencies, 50),
+		P95LatencyMs:  percentile(latencies, 95),
+		P99LatencyMs:  percentile(latencies, 99),
+		P999LatencyMs: percentile(latencies, 99.9),
 	}
 
 	fmt.Printf("Done in %d ms (%.2f msg/sec, %.2f MB/sec)\n", durMs, msgPerSec, mbPerSec)
