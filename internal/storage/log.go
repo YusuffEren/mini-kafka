@@ -389,6 +389,13 @@ func (l *Log) Truncate(offset int64) error {
 	return nil
 }
 
+// NumSegments returns the number of segments currently in the log.
+func (l *Log) NumSegments() int {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return len(l.segments)
+}
+
 // Close stops the background goroutines, flushes and closes every segment.
 // Close is idempotent.
 func (l *Log) Close() error {

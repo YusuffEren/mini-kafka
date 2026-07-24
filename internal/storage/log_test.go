@@ -203,8 +203,8 @@ func TestLogRotation(t *testing.T) {
 	}
 
 	// The log must have rotated at least once.
-	if len(l.segments) <= 1 {
-		t.Errorf("segments = %d, want > 1", len(l.segments))
+	if l.NumSegments() <= 1 {
+		t.Errorf("segments = %d, want > 1", l.NumSegments())
 	}
 	if got := l.HighestOffset(); got != n {
 		t.Errorf("HighestOffset() = %d, want %d", got, n)
@@ -331,7 +331,7 @@ func TestLogRetentionByBytes(t *testing.T) {
 		}
 	}
 
-	segmentsBefore := len(l.segments)
+	segmentsBefore := l.NumSegments()
 	dir := l.dir
 	if err := l.Close(); err != nil {
 		t.Fatalf("Close failed: %v", err)
@@ -345,8 +345,8 @@ func TestLogRetentionByBytes(t *testing.T) {
 	defer l2.Close()
 	time.Sleep(2 * time.Second)
 
-	if segmentsBefore <= len(l2.segments) {
-		t.Errorf("segments did not shrink: before=%d, after=%d", segmentsBefore, len(l2.segments))
+	if segmentsBefore <= l2.NumSegments() {
+		t.Errorf("segments did not shrink: before=%d, after=%d", segmentsBefore, l2.NumSegments())
 	}
 	if got := l2.LowestOffset(); got <= 0 {
 		t.Errorf("LowestOffset() after retention = %d, want > 0", got)
