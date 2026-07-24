@@ -23,8 +23,8 @@ func startServer(t *testing.T, mux *Mux) (*Server, string) {
 
 	var addr string
 	for i := 0; i < 100; i++ {
-		if srv.listener != nil {
-			addr = srv.listener.Addr().String()
+		if a := srv.Addr(); a != nil {
+			addr = a.String()
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
