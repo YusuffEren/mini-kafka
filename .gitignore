@@ -3,6 +3,7 @@
 *.out
 *.test
 coverage.html
+coverage
 /data/
 .env
 *.log

@@ -13,28 +13,28 @@
 - [x] T1.5 Faz 1 DoD kontrolü (test, coverage, lint, review)
 
 ## Faz 2: Protokol ve TCP Server
-- [ ] T2.1 Codec (`internal/protocol/codec.go`)
-- [ ] T2.2 Frame (`internal/protocol/frame.go`)
-- [ ] T2.3 Request/Response tipleri
-- [ ] T2.4 TCP Server
-- [ ] T2.5 Broker iskeleti
-- [ ] T2.6 Client (producer, consumer)
-- [ ] T2.7 CLI'lar
-- [ ] T2.8 Faz 2 DoD kontrolü
+- [x] T2.1 Codec (`internal/protocol/codec.go`)
+- [x] T2.2 Frame (`internal/protocol/frame.go`)
+- [x] T2.3 Request/Response tipleri
+- [x] T2.4 TCP Server
+- [x] T2.5 Broker iskeleti
+- [x] T2.6 Client (producer, consumer)
+- [x] T2.7 CLI'lar
+- [x] T2.8 Faz 2 DoD kontrolü
 
 ## Faz 3: Topic ve Partition
-- [ ] T3.1 Partition (`internal/broker/partition.go`)
-- [ ] T3.2 Topic (`internal/broker/topic.go`)
-- [ ] T3.3 Metadata + CreateTopic API
-- [ ] T3.4 Client metadata cache
-- [ ] T3.5 Faz 3 DoD kontrolü
+- [x] T3.1 Partition (`internal/broker/partition.go`)
+- [x] T3.2 Topic (`internal/broker/topic.go`)
+- [x] T3.3 Metadata + CreateTopic API
+- [x] T3.4 Client metadata cache
+- [x] T3.5 Faz 3 DoD kontrolü
 
 ## Faz 4: Consumer Group ve Offset Yönetimi
-- [ ] T4.1 Group Coordinator
-- [ ] T4.2 Assignor (Range, RoundRobin)
-- [ ] T4.3 Offset Store
-- [ ] T4.4 Group Consumer Client
-- [ ] T4.5 Faz 4 DoD kontrolü
+- [x] T4.1 Group Coordinator
+- [x] T4.2 Assignor (Range, RoundRobin)
+- [x] T4.3 Offset Store
+- [x] T4.4 Group Consumer Client
+- [x] T4.5 Faz 4 DoD kontrolü
 
 ## Faz 5: Replikasyon ve ISR
 - [ ] T5.1 Replica State + ISR
