@@ -43,6 +43,17 @@ type Broker struct {
 	metaManager *MetadataManager
 	coordinator *coordinator.GroupCoordinator
 
+	// Replication state
+	purgatory   *replication.Purgatory
+	epochMgr    *replication.EpochManager
+	localID     int32
+	replicaIDs  []int32
+	isrMu       sync.RWMutex
+	isrTrackers map[string]map[int32]*replication.ISRTracker // topic -> partition -> tracker
+
+	fetchCancel context.CancelFunc
+	fetchWg     sync.WaitGroup
+
 	mu        sync.RWMutex
 	topics    map[string]*Topic
 	listeners map[string]map[int32][]chan struct{} // topic -> partition -> listeners
@@ -62,21 +73,30 @@ func New(cfg *config.Config) (*Broker, error) {
 	offsetStore := coordinator.NewOffsetStore(cfg.Broker.DataDir)
 	gc := coordinator.NewGroupCoordinator(offsetStore)
 
+	localID := int32(cfg.Broker.ID)
+	replicaIDs := clusterReplicaIDs(cfg)
+
 	b := &Broker{
 		config:      cfg,
 		metaManager: metaMgr,
 		coordinator: gc,
+		purgatory:   replication.NewPurgatory(),
+		epochMgr:    replication.NewEpochManager(),
+		localID:     localID,
+		replicaIDs:  replicaIDs,
+		isrTrackers: make(map[string]map[int32]*replication.ISRTracker),
 		topics:      make(map[string]*Topic),
 		listeners:   make(map[string]map[int32][]chan struct{}),
 	}
 
-	// Load existing persisted topics
+	// Load existing persisted topics and wire replication state.
 	for _, meta := range metaMgr.ListTopics() {
 		t, err := NewTopic(cfg.Broker.DataDir, meta.Name, meta.NumPartitions, storage.Config{})
 		if err != nil {
 			return nil, fmt.Errorf("broker: load topic %s: %w", meta.Name, err)
 		}
 		b.topics[meta.Name] = t
+		b.initTopicReplication(meta.Name, meta.NumPartitions)
 	}
 
 	mux := server.NewMux()
@@ -110,13 +130,16 @@ func (b *Broker) Addr() net.Addr {
 	return b.server.Addr()
 }
 
-// Start begins accepting TCP connections.
+// Start begins accepting TCP connections and starts follower fetch loops.
 func (b *Broker) Start() error {
+	b.startFollowerFetchers()
 	return b.server.Start()
 }
 
 // Shutdown gracefully stops the broker, group coordinator, and closes all partition storage logs.
 func (b *Broker) Shutdown(ctx context.Context) error {
+	b.stopFollowerFetchers()
+
 	if b.coordinator != nil {
 		b.coordinator.Close()
 	}
@@ -175,6 +198,7 @@ func (b *Broker) getOrCreateTopic(name string, requestedPartitions int32) (*Topi
 	}
 
 	b.topics[name] = t
+	b.initTopicReplication(name, meta.NumPartitions)
 	return t, nil
 }
 
@@ -265,6 +289,23 @@ func (b *Broker) handleProduce(req *protocol.RequestFrame) (*protocol.ResponseFr
 				continue
 			}
 
+			// Epoch / leadership fence: reject produce if we are not the leader.
+			if !b.isLeader(tReq.Name, pReq.PartitionID) {
+				partResp.ErrorCode = server.ErrNotLeaderForPartition
+				topicResp.Partitions[j] = partResp
+				continue
+			}
+
+			// acks=all requires enough in-sync replicas before accepting.
+			if produceReq.Acks == -1 {
+				tracker := b.getOrCreateISRTracker(tReq.Name, pReq.PartitionID)
+				if len(tracker.GetISR()) < b.minInsyncReplicas() {
+					partResp.ErrorCode = server.ErrNotEnoughReplicas
+					topicResp.Partitions[j] = partResp
+					continue
+				}
+			}
+
 			buf := bytes.NewReader(pReq.RecordSet)
 			var records []*storage.Record
 			for buf.Len() > 0 {
@@ -284,10 +325,25 @@ func (b *Broker) handleProduce(req *protocol.RequestFrame) (*protocol.ResponseFr
 				if appendErr != nil {
 					partResp.ErrorCode = server.ErrUnknown
 				} else {
+					leaderLEO := pObj.LogEndOffset()
+					hw := b.updateLeaderLEO(tReq.Name, pReq.PartitionID, leaderLEO)
+					pObj.SetHighWatermark(hw)
+
 					partResp.ErrorCode = server.ErrNone
 					partResp.BaseOffset = baseOffset
 					partResp.LogAppendTime = time.Now().UnixMilli()
 					b.notifyAppended(tReq.Name, pReq.PartitionID)
+
+					// acks=all: wait in purgatory until HW reaches the new LEO.
+					if produceReq.Acks == -1 {
+						if waitErr := b.waitForAcksAll(tReq.Name, pReq.PartitionID, leaderLEO, produceReq.TimeoutMs); waitErr != nil {
+							if errors.Is(waitErr, errProduceTimeout) {
+								partResp.ErrorCode = server.ErrRequestTimedOut
+							} else {
+								partResp.ErrorCode = server.ErrNotEnoughReplicas
+							}
+						}
+					}
 				}
 			}
 			topicResp.Partitions[j] = partResp
@@ -411,11 +467,7 @@ func (b *Broker) handleMetadata(req *protocol.RequestFrame) (*protocol.ResponseF
 		return &protocol.ResponseFrame{ErrorCode: server.ErrUnknown}, nil
 	}
 
-	brokerMeta := protocol.BrokerMetadata{
-		NodeID: int32(b.config.Broker.ID),
-		Host:   b.config.Broker.Host,
-		Port:   int32(b.config.Broker.Port),
-	}
+	brokersMeta := b.clusterBrokerMetadata()
 
 	var targetTopics []string
 	if metaReq.Topics == nil {
@@ -446,11 +498,17 @@ func (b *Broker) handleMetadata(req *protocol.RequestFrame) (*protocol.ResponseF
 
 		parts := make([]protocol.PartitionMetadata, tm.NumPartitions)
 		for pID := int32(0); pID < tm.NumPartitions; pID++ {
+			leader := b.partitionLeader(topicName, pID)
+			replicas := append([]int32(nil), b.replicaIDs...)
+			isr := replicas
+			if tracker := b.getISRTracker(topicName, pID); tracker != nil {
+				isr = tracker.GetISR()
+			}
 			parts[pID] = protocol.PartitionMetadata{
 				PartitionID: pID,
-				Leader:      int32(b.config.Broker.ID),
-				Replicas:    []int32{int32(b.config.Broker.ID)},
-				ISR:         []int32{int32(b.config.Broker.ID)},
+				Leader:      leader,
+				Replicas:    replicas,
+				ISR:         isr,
 			}
 		}
 
@@ -462,7 +520,7 @@ func (b *Broker) handleMetadata(req *protocol.RequestFrame) (*protocol.ResponseF
 	}
 
 	resp := &protocol.MetadataResponse{
-		Brokers: []protocol.BrokerMetadata{brokerMeta},
+		Brokers: brokersMeta,
 		Topics:  topicMetas,
 	}
 
@@ -518,6 +576,7 @@ func (b *Broker) handleCreateTopics(req *protocol.RequestFrame) (*protocol.Respo
 			continue
 		}
 		b.topics[tReq.Name] = tObj
+		b.initTopicReplication(tReq.Name, tReq.NumPartitions)
 		b.mu.Unlock()
 
 		respTopics[i] = protocol.CreateTopicResponseTopic{
@@ -761,25 +820,35 @@ func (b *Broker) handleReplicaFetch(req *protocol.RequestFrame) (*protocol.Respo
 		return &protocol.ResponseFrame{ErrorCode: server.ErrUnknownTopicOrPartition}, nil
 	}
 
-	records, err := p.ReadFrom(replicaReq.FetchOffset, 1024*1024)
-	if err != nil {
+	// Only the leader serves replica fetches.
+	if !b.isLeader(replicaReq.Topic, replicaReq.Partition) {
+		return &protocol.ResponseFrame{ErrorCode: server.ErrNotLeaderForPartition}, nil
+	}
+
+	maxBytes := b.config.Replication.ReplicaFetchMaxBytes
+	if maxBytes <= 0 {
+		maxBytes = 1024 * 1024
+	}
+	records, err := p.ReadFrom(replicaReq.FetchOffset, maxBytes)
+	if err != nil && !errors.Is(err, io.EOF) {
 		return &protocol.ResponseFrame{ErrorCode: server.ErrUnknown}, nil
 	}
 
-	var payload bytes.Buffer
-	if _, err := protocol.PutInt16(&payload, 0); err != nil {
-		return nil, err
-	}
-	if _, err := protocol.PutInt64(&payload, p.HighWatermark()); err != nil {
-		return nil, err
+	leaderLEO := p.LogEndOffset()
+	followerLEO := replicaReq.FetchOffset
+	if len(records) > 0 {
+		followerLEO = records[len(records)-1].Offset + 1
 	}
 
-	for _, rec := range records {
-		var recBuf bytes.Buffer
-		if _, err := rec.Encode(&recBuf); err == nil {
-			payload.Write(recBuf.Bytes())
-		}
-	}
+	// Keep leader LEO current, then advance follower LEO and recompute HW.
+	_ = b.updateLeaderLEO(replicaReq.Topic, replicaReq.Partition, leaderLEO)
+	hw := b.updateReplicaLEO(replicaReq.Topic, replicaReq.Partition, replicaReq.ReplicaID, followerLEO, leaderLEO)
+	p.SetHighWatermark(hw)
+	b.purgatory.CheckAndComplete(replicaReq.Topic, replicaReq.Partition, hw)
 
-	return &protocol.ResponseFrame{ErrorCode: 0, Payload: payload.Bytes()}, nil
+	payload, err := replication.EncodeReplicaFetchResponse(0, hw, records)
+	if err != nil {
+		return nil, err
+	}
+	return &protocol.ResponseFrame{ErrorCode: 0, Payload: payload}, nil
 }

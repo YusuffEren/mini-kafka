@@ -60,13 +60,9 @@ func (p *Partition) writerLoop() {
 	for {
 		select {
 		case req := <-p.appendCh:
+			// High watermark is owned by the broker via ISRTracker.SetHighWatermark;
+			// the writer only appends to the log.
 			baseOffset, err := p.log.AppendBatch(req.records)
-			if err == nil {
-				p.mu.Lock()
-				// Default single-broker HW behavior: HW equals LEO
-				p.highWatermark = p.log.HighestOffset()
-				p.mu.Unlock()
-			}
 			req.respCh <- appendResponse{baseOffset: baseOffset, err: err}
 		case <-p.closeCh:
 			// Drain remaining append requests
@@ -74,11 +70,6 @@ func (p *Partition) writerLoop() {
 				select {
 				case req := <-p.appendCh:
 					baseOffset, err := p.log.AppendBatch(req.records)
-					if err == nil {
-						p.mu.Lock()
-						p.highWatermark = p.log.HighestOffset()
-						p.mu.Unlock()
-					}
 					req.respCh <- appendResponse{baseOffset: baseOffset, err: err}
 				default:
 					return
