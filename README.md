@@ -1,74 +1,97 @@
-# mini-kafka 🚀
+# mini-kafka
 
-Zero-dependency, high-performance Apache Kafka protocol-compatible distributed streaming platform written in pure Go.
+Go ile yazılmış, Kafka binary protokolüyle uyumlu bir mesaj kuyruğu. Harici bağımlılığı yok denecek kadar az (`golang.org/x/sys` ve `yaml.v3` hariç), tek binary ile çalışıyor.
 
-```
-                  +-----------------------------------+
-                  |             mini-kafka            |
-                  +-----------------+-----------------+
-                                    |
-            +-----------------------+-----------------------+
-            |                       |                       |
-            v                       v                       v
-  +------------------+    +------------------+    +------------------+
-  |  Storage Engine  |    | Protocol Transport|   | Group Coordinator|
-  |  Log / Segment   |    | Frame / Codec    |    | Rebalance / ISR  |
-  |  Memory Map Index|    | TCP Server / Mux |    | Assignors        |
-  +------------------+    +------------------+    +------------------+
-```
+## Gereksinimler
 
-## Features ✨
+- Go 1.25+
+- `make` (opsiyonel, `go build` de çalışır)
 
-- **Custom Storage Engine**: Append-only log files with binary sparse `.index` indexing, automatic 128MB log segment rolling, and configurable retention.
-- **Kafka Protocol Compatibility**: Binary request/response frame codec implementation supporting `Produce` (apiKey 0), `Fetch` (apiKey 1), `Metadata` (apiKey 2), `CreateTopics` (apiKey 3), `JoinGroup` (apiKey 4), `SyncGroup` (apiKey 5), `Heartbeat` (apiKey 6), `LeaveGroup` (apiKey 7), `OffsetCommit` (apiKey 8), `OffsetFetch` (apiKey 9), `ListOffsets` (apiKey 10), and `ReplicaFetch` (apiKey 11).
-- **Partition Router**: Key-based Murmur2 hash partitioner for uniform record distribution.
-- **Consumer Group Coordinator**: State machine managing rebalancing (`Range` and `RoundRobin` assignment strategies), session timeouts, auto-commits, and committed offset persistence.
-- **Replication & ISR**: Leader-follower replica tracking with High Watermark (HW) consistency bounds, `replication-offset-checkpoint` persistence, and Leader Epoch split-brain prevention.
-
----
-
-## Quickstart ⚡
+## Kurulum
 
 ```bash
-# 1. Build binaries
+git clone https://github.com/YusuffEren/mini-kafka.git
+cd mini-kafka
+
+# make ile
 make build
 
-# 2. Run single broker
-./bin/broker -config config/broker.yaml
-
-# 3. Produce messages using CLI
-./bin/producer -brokers 127.0.0.1:9092 -topic my-topic -key "user1" -value "hello mini-kafka"
-
-# 4. Consume messages using CLI
-./bin/consumer -brokers 127.0.0.1:9092 -topic my-topic -group my-group
+# veya make olmadan
+go build -o bin/broker ./cmd/broker
+go build -o bin/producer ./cmd/producer
+go build -o bin/consumer ./cmd/consumer
 ```
 
----
+## Broker çalıştırma
 
-## Supported Features vs Apache Kafka 📊
+```bash
+./bin/broker -config config/broker.yaml
+```
 
-| Feature | Apache Kafka | mini-kafka | Notes |
-|---|---|---|---|
-| Binary Log Storage | ✅ | ✅ | Custom `.log` & `.index` implementation |
-| Murmur2 Partitioner | ✅ | ✅ | Bitwise identical to Kafka Java client |
-| Group Coordinator | ✅ | ✅ | Range & RoundRobin assignors supported |
-| Replication & ISR | ✅ | ✅ | High Watermark (HW) & Leader Epoch |
-| Zero-Copy (`sendfile`)| ✅ | ❌ | User-space buffer reading in Go |
-| Record Compression | ✅ (LZ4/Snappy) | ❌ | Raw uncompressed record batches |
+Config dosyası (`config/broker.yaml`) üzerinden broker ID, port, data dizini, segment boyutu, retention gibi ayarları değiştirebilirsin.
 
----
+## Producer / Consumer (CLI)
 
-## Benchmarks 📈
+```bash
+# tek mesaj
+./bin/producer -brokers 127.0.0.1:9092 -topic test -key "k1" -value "merhaba"
 
-See detailed methodology, throughput numbers, and JVM vs Go latency comparisons in [BENCHMARK.md](docs/BENCHMARK.md).
+# consumer
+./bin/consumer -brokers 127.0.0.1:9092 -topic test -group g1
+```
 
----
+## Go client
 
-## Architecture & Learnings 🧠
+```go
+import "github.com/YusuffEren/mini-kafka/pkg/client"
 
-Read complete technical deep dives in the `docs/` folder:
-- [Phase 1: Storage Layer](docs/PHASE_1.md)
-- [Phase 2: Protocol Transport](docs/PHASE_2.md)
-- [Phase 3: Topic & Partition Management](docs/PHASE_3.md)
-- [Phase 4: Consumer Groups & Offsets](docs/PHASE_4.md)
-- [Phase 5: Replication & ISR](docs/PHASE_5.md)
+// producer
+p, _ := client.NewProducer([]string{"127.0.0.1:9092"}, client.DefaultProducerConfig())
+offset, _ := p.Send(ctx, "test", 0, []byte("key"), []byte("value"))
+
+// consumer group
+gc, _ := client.NewGroupConsumer([]string{"127.0.0.1:9092"}, "grup-1", []string{"test"}, client.DefaultGroupConsumerConfig())
+msgs, _ := gc.Poll(ctx, 1*time.Second)
+```
+
+## Docker
+
+```bash
+docker compose up -d
+```
+
+Tek broker, `9092` portunda ayağa kalkar.
+
+## Desteklenen Kafka API'leri
+
+Produce (0), Fetch (1), Metadata (2), CreateTopics (3), JoinGroup (4), SyncGroup (5), Heartbeat (6), LeaveGroup (7), OffsetCommit (8), OffsetFetch (9), ListOffsets (10), ReplicaFetch (11).
+
+Topic başına birden fazla partition, key-based Murmur2 routing, consumer group rebalance (Range ve RoundRobin), ISR tabanlı replikasyon ve leader epoch desteği var. Offset'ler `__consumer_offsets` dizini altında storage log partition'larına yazılıyor.
+
+## Bilinçli yapılmayanlar
+
+- **Record compression** (LZ4/Snappy/gzip): yok. Tüm kayıtlar ham binary olarak saklanıyor.
+- **Zero-copy sendfile**: Go'nun standart kütüphanesiyle uğraşmaya değmedi.
+- **Dinamik leader failover**: Şu an statik leader ataması (`partition % broker_sayisi`). Controller seçimi ve otomatik failover planlanmadı.
+- **ACL / authentication**: Yok. Herkes her topic'e erişebilir.
+
+## Test ve CI
+
+```bash
+# tüm testler
+go test ./... -count=1
+
+# race detector ile (Linux, CGO_ENABLED=1)
+go test ./... -race -count=1
+```
+
+CI'da her push'ta `gofmt`, `go vet`, `go test -race` ve `golangci-lint` çalışıyor.
+
+## Dokümantasyon
+
+Daha detaylı yazılar `docs/` altında:
+
+- [Storage katmanı](docs/STORAGE.md) — segment, index, log yapısı
+- [Binary protokol](docs/PROTOCOL.md) — codec, frame, request/response formatları
+- [Benchmark sonuçları](docs/BENCHMARK.md)
+- Faz 1-6: `docs/PHASE_1.md` ... `docs/PHASE_6.md`
