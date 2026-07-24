@@ -26,6 +26,9 @@ const (
 	ErrUnsupportedVersion      int16 = 13
 	ErrTopicAlreadyExists      int16 = 14
 	ErrInvalidPartitionCount   int16 = 15
+	// ErrInvalidTopicException is returned when a topic name fails validation
+	// (illegal characters, reserved names, or path-escape attempts).
+	ErrInvalidTopicException int16 = 17
 )
 
 // HandlerFunc is the signature for API request handlers. It receives the

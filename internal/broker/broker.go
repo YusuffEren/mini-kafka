@@ -90,8 +90,12 @@ func New(cfg *config.Config) (*Broker, error) {
 	}
 
 	// Load existing persisted topics and wire replication state.
+	logCfg := storageConfigFrom(cfg)
 	for _, meta := range metaMgr.ListTopics() {
-		t, err := NewTopic(cfg.Broker.DataDir, meta.Name, meta.NumPartitions, storage.Config{})
+		if err := validateTopicName(cfg.Broker.DataDir, meta.Name); err != nil {
+			return nil, fmt.Errorf("broker: load topic %s: %w", meta.Name, err)
+		}
+		t, err := NewTopic(cfg.Broker.DataDir, meta.Name, meta.NumPartitions, logCfg)
 		if err != nil {
 			return nil, fmt.Errorf("broker: load topic %s: %w", meta.Name, err)
 		}
@@ -163,7 +167,33 @@ func (b *Broker) getTopic(name string) *Topic {
 	return b.topics[name]
 }
 
+// storageConfigFrom maps broker log settings onto storage.Config so YAML
+// segment/retention knobs actually reach the storage layer.
+func storageConfigFrom(cfg *config.Config) storage.Config {
+	if cfg == nil {
+		return storage.Config{}
+	}
+	return storage.Config{
+		SegmentBytes:       cfg.Log.SegmentBytes,
+		SegmentMs:          cfg.Log.SegmentMs,
+		IndexIntervalBytes: cfg.Log.IndexIntervalBytes,
+		IndexMaxBytes:      cfg.Log.IndexMaxBytes,
+		RetentionMs:        cfg.Log.RetentionMs,
+		RetentionBytes:     cfg.Log.RetentionBytes,
+		FlushMessages:      cfg.Log.FlushMessages,
+		FlushMs:            cfg.Log.FlushMs,
+	}
+}
+
+func (b *Broker) storageConfig() storage.Config {
+	return storageConfigFrom(b.config)
+}
+
 func (b *Broker) getOrCreateTopic(name string, requestedPartitions int32) (*Topic, error) {
+	if err := validateTopicName(b.config.Broker.DataDir, name); err != nil {
+		return nil, err
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -192,7 +222,7 @@ func (b *Broker) getOrCreateTopic(name string, requestedPartitions int32) (*Topi
 		return nil, err
 	}
 
-	t, err := NewTopic(b.config.Broker.DataDir, name, meta.NumPartitions, storage.Config{})
+	t, err := NewTopic(b.config.Broker.DataDir, name, meta.NumPartitions, b.storageConfig())
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +309,11 @@ func (b *Broker) handleProduce(req *protocol.RequestFrame) (*protocol.ResponseFr
 			}
 
 			if err != nil || tObj == nil {
-				partResp.ErrorCode = server.ErrUnknownTopicOrPartition
+				if errors.Is(err, ErrInvalidTopicName) {
+					partResp.ErrorCode = server.ErrInvalidTopicException
+				} else {
+					partResp.ErrorCode = server.ErrUnknownTopicOrPartition
+				}
 				topicResp.Partitions[j] = partResp
 				continue
 			}
@@ -431,16 +465,28 @@ func (b *Broker) handleFetch(req *protocol.RequestFrame) (*protocol.ResponseFram
 				continue
 			}
 
+			// Consumers may only observe records below the high watermark.
+			// Returning LEO-visible uncommitted data would break the
+			// replication visibility invariant.
+			hw := pObj.HighWatermark()
+			partResp.ErrorCode = server.ErrNone
+			partResp.HighWatermark = hw
+			partResp.LogStartOffset = pObj.LogStartOffset()
+
+			if pReq.FetchOffset >= hw {
+				topicResp.Partitions[j] = partResp
+				continue
+			}
+
 			records, err := pObj.ReadFrom(pReq.FetchOffset, pReq.MaxBytes)
 			if err != nil && !errors.Is(err, io.EOF) {
 				partResp.ErrorCode = server.ErrUnknown
 			} else {
-				partResp.ErrorCode = server.ErrNone
-				partResp.HighWatermark = pObj.HighWatermark()
-				partResp.LogStartOffset = pObj.LogStartOffset()
-
 				var recordBuf bytes.Buffer
 				for _, r := range records {
+					if r.Offset >= hw {
+						break
+					}
 					if _, err := r.Encode(&recordBuf); err != nil {
 						partResp.ErrorCode = server.ErrUnknown
 						break
@@ -542,6 +588,14 @@ func (b *Broker) handleCreateTopics(req *protocol.RequestFrame) (*protocol.Respo
 
 	respTopics := make([]protocol.CreateTopicResponseTopic, len(createReq.Topics))
 	for i, tReq := range createReq.Topics {
+		if err := validateTopicName(b.config.Broker.DataDir, tReq.Name); err != nil {
+			respTopics[i] = protocol.CreateTopicResponseTopic{
+				Name:      tReq.Name,
+				ErrorCode: server.ErrInvalidTopicException,
+			}
+			continue
+		}
+
 		if tReq.NumPartitions <= 0 {
 			respTopics[i] = protocol.CreateTopicResponseTopic{
 				Name:      tReq.Name,
@@ -568,12 +622,16 @@ func (b *Broker) handleCreateTopics(req *protocol.RequestFrame) (*protocol.Respo
 		}
 
 		b.mu.Lock()
-		tObj, err := NewTopic(b.config.Broker.DataDir, tReq.Name, tReq.NumPartitions, storage.Config{})
+		tObj, err := NewTopic(b.config.Broker.DataDir, tReq.Name, tReq.NumPartitions, b.storageConfig())
 		if err != nil {
 			b.mu.Unlock()
+			code := server.ErrUnknown
+			if errors.Is(err, ErrInvalidTopicName) {
+				code = server.ErrInvalidTopicException
+			}
 			respTopics[i] = protocol.CreateTopicResponseTopic{
 				Name:      tReq.Name,
-				ErrorCode: server.ErrUnknown,
+				ErrorCode: code,
 			}
 			continue
 		}

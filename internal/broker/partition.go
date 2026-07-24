@@ -1,12 +1,53 @@
 package broker
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/yusuf/mini-kafka/internal/storage"
 )
+
+// ErrInvalidTopicName is returned when a topic name fails validation.
+var ErrInvalidTopicName = errors.New("invalid topic name")
+
+// topicNamePattern matches Kafka-compatible topic names: alphanumerics, dot,
+// underscore and hyphen. Length is enforced separately (max 249).
+var topicNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+const maxTopicNameLen = 249
+
+// validateTopicName checks that name is a safe, legal topic identifier and that
+// the partition directory path derived from it cannot escape dataDir.
+func validateTopicName(dataDir, name string) error {
+	if name == "" || name == "." || name == ".." {
+		return fmt.Errorf("%w: %q", ErrInvalidTopicName, name)
+	}
+	if len(name) > maxTopicNameLen {
+		return fmt.Errorf("%w: exceeds %d characters", ErrInvalidTopicName, maxTopicNameLen)
+	}
+	if !topicNamePattern.MatchString(name) {
+		return fmt.Errorf("%w: %q", ErrInvalidTopicName, name)
+	}
+
+	// Defense in depth: after Clean, the resolved topic path must stay under dataDir.
+	cleanData, err := filepath.Abs(filepath.Clean(dataDir))
+	if err != nil {
+		return fmt.Errorf("%w: resolve data dir: %v", ErrInvalidTopicName, err)
+	}
+	topicPath := filepath.Clean(filepath.Join(cleanData, name))
+	rel, err := filepath.Rel(cleanData, topicPath)
+	if err != nil {
+		return fmt.Errorf("%w: %q", ErrInvalidTopicName, name)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%w: path escapes data dir: %q", ErrInvalidTopicName, name)
+	}
+	return nil
+}
 
 type appendResponse struct {
 	baseOffset int64
@@ -34,7 +75,20 @@ type Partition struct {
 
 // NewPartition initializes a Partition instance for a topic and partition ID.
 func NewPartition(baseDir string, topic string, partitionID int32, cfg storage.Config) (*Partition, error) {
-	dir := filepath.Join(baseDir, topic, fmt.Sprintf("%d", partitionID))
+	if err := validateTopicName(baseDir, topic); err != nil {
+		return nil, fmt.Errorf("partition %s-%d: %w", topic, partitionID, err)
+	}
+
+	cleanBase, err := filepath.Abs(filepath.Clean(baseDir))
+	if err != nil {
+		return nil, fmt.Errorf("partition %s-%d: resolve base dir: %w", topic, partitionID, err)
+	}
+	dir := filepath.Clean(filepath.Join(cleanBase, topic, fmt.Sprintf("%d", partitionID)))
+	rel, err := filepath.Rel(cleanBase, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("partition %s-%d: %w: path escapes data dir", topic, partitionID, ErrInvalidTopicName)
+	}
+
 	log, err := storage.NewLog(dir, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("partition %s-%d: %w", topic, partitionID, err)
