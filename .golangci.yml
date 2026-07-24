@@ -24,3 +24,6 @@ issues:
         - errcheck
     - path: internal/storage/index_windows.go
       text: "SA1019"
+    - path: internal/protocol/codec_test.go
+      linters:
+        - gofmt

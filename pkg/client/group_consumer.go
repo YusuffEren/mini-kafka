@@ -143,29 +143,6 @@ func NewGroupConsumer(addrs []string, groupID string, topics []string, cfg Group
 	return gc, nil
 }
 
-func (gc *GroupConsumer) getConn() (net.Conn, error) {
-	gc.mu.Lock()
-	defer gc.mu.Unlock()
-
-	if gc.closed {
-		return nil, fmt.Errorf("group_consumer closed")
-	}
-	if gc.conn != nil {
-		return gc.conn, nil
-	}
-
-	var lastErr error
-	for _, addr := range gc.addrs {
-		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
-		if err == nil {
-			gc.conn = conn
-			return conn, nil
-		}
-		lastErr = err
-	}
-	return nil, fmt.Errorf("group_consumer connect failed: %w", lastErr)
-}
-
 func (gc *GroupConsumer) closeConn() {
 	gc.mu.Lock()
 	defer gc.mu.Unlock()

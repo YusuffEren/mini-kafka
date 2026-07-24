@@ -70,7 +70,7 @@ func TestServer_roundtrip_echo(t *testing.T) {
 	})
 
 	srv, addr := startServer(t, mux)
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -118,7 +118,7 @@ func TestServer_ApiVersions_cevap_kontrol(t *testing.T) {
 	})
 
 	srv, addr := startServer(t, mux)
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -173,7 +173,7 @@ func TestServer_shutdown_aktif_baglanti_drain(t *testing.T) {
 	})
 
 	srv, addr := startServer(t, mux)
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -269,7 +269,7 @@ func TestServer_bilinmeyen_api_key_UnsupportedVersion(t *testing.T) {
 	})
 
 	srv, addr := startServer(t, mux)
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -295,7 +295,7 @@ func TestServer_bilinmeyen_api_key_UnsupportedVersion(t *testing.T) {
 	}
 }
 
-func TestServer_gecersiz_adres_Start_hata(t *testing.T) {
+func TestServer_gecersiz_address_Start_hata(t *testing.T) {
 	mux := NewMux()
 	srv := NewServer("not-a-valid-tcp-address!!", mux, 1024)
 	if err := srv.Start(); err == nil {

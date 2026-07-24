@@ -123,10 +123,16 @@ if (Var "go") {
 
 # ============================================================================
 
-Yaz "baslik" "3. Test (race detector ile)"
+Yaz "baslik" "3. Test"
 
 if (Var "go") {
-    Run-Step "go test -race ./..." "go" @("test", "./...", "-race", "-count=1")
+    # race detector cgo gerektirir; yoksa -race'siz calistir
+    $cgo = [Environment]::GetEnvironmentVariable("CGO_ENABLED")
+    if ($cgo -eq "1") {
+        Run-Step "go test -race ./..." "go" @("test", "./...", "-race", "-count=1")
+    } else {
+        Run-Step "go test ./..." "go" @("test", "./...", "-count=1")
+    }
 } else {
     Atla "go test" "go"
 }

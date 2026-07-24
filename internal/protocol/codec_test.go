@@ -47,7 +47,7 @@ func TestInt8_truncatedReturnsEOF(t *testing.T) {
 
 func TestPutInt8_bigEndianByteOrder(t *testing.T) {
 	var buf bytes.Buffer
-	PutInt8(&buf, -1)
+	_, _ = PutInt8(&buf, -1)
 	want := []byte{0xff}
 	if !bytes.Equal(buf.Bytes(), want) {
 		t.Fatalf("PutInt8(-1) = %x, want %x", buf.Bytes(), want)
@@ -89,7 +89,7 @@ func TestInt16_truncatedReturnsUnexpectedEOF(t *testing.T) {
 
 func TestPutInt16_bigEndianByteOrder(t *testing.T) {
 	var buf bytes.Buffer
-	PutInt16(&buf, 0x1234)
+	_, _ = PutInt16(&buf, 0x1234)
 	want := []byte{0x12, 0x34}
 	if !bytes.Equal(buf.Bytes(), want) {
 		t.Fatalf("PutInt16(0x1234) = %x, want %x", buf.Bytes(), want)
@@ -131,7 +131,7 @@ func TestInt32_truncatedReturnsUnexpectedEOF(t *testing.T) {
 
 func TestPutInt32_bigEndianByteOrder(t *testing.T) {
 	var buf bytes.Buffer
-	PutInt32(&buf, 0x12345678)
+	_, _ = PutInt32(&buf, 0x12345678)
 	want := []byte{0x12, 0x34, 0x56, 0x78}
 	if !bytes.Equal(buf.Bytes(), want) {
 		t.Fatalf("PutInt32(0x12345678) = %x, want %x", buf.Bytes(), want)
@@ -173,7 +173,7 @@ func TestInt64_truncatedReturnsUnexpectedEOF(t *testing.T) {
 
 func TestPutInt64_bigEndianByteOrder(t *testing.T) {
 	var buf bytes.Buffer
-	PutInt64(&buf, 0x123456789abcdef0)
+	_, _ = PutInt64(&buf, 0x123456789abcdef0)
 	want := []byte{0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0}
 	if !bytes.Equal(buf.Bytes(), want) {
 		t.Fatalf("PutInt64(0x123456789abcdef0) = %x, want %x", buf.Bytes(), want)
@@ -277,7 +277,7 @@ func TestPutString_rejectsLengthExceedingInt16(t *testing.T) {
 
 func TestString_nullSentinelReturnsEmpty(t *testing.T) {
 	var buf bytes.Buffer
-	binary.Write(&buf, binary.BigEndian, int16(-1))
+	_ = binary.Write(&buf, binary.BigEndian, int16(-1))
 	got, err := String(&buf)
 	if err != nil {
 		t.Fatalf("String() error: %v", err)
@@ -289,7 +289,7 @@ func TestString_nullSentinelReturnsEmpty(t *testing.T) {
 
 func TestString_truncatedPayloadReturnsUnexpectedEOF(t *testing.T) {
 	var buf bytes.Buffer
-	binary.Write(&buf, binary.BigEndian, int16(5))
+	_ = binary.Write(&buf, binary.BigEndian, int16(5))
 	buf.Write([]byte("ab")) // only 2 of 5 bytes
 	_, err := String(&buf)
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
@@ -299,7 +299,7 @@ func TestString_truncatedPayloadReturnsUnexpectedEOF(t *testing.T) {
 
 func TestPutString_bigEndianByteOrder(t *testing.T) {
 	var buf bytes.Buffer
-	PutString(&buf, "AB")
+	_, _ = PutString(&buf, "AB")
 	want := []byte{0x00, 0x02, 'A', 'B'}
 	if !bytes.Equal(buf.Bytes(), want) {
 		t.Fatalf("PutString(\"AB\") = %x, want %x", buf.Bytes(), want)
@@ -378,7 +378,7 @@ func TestPutNullableString_nonEmptyRoundTrip(t *testing.T) {
 
 func TestNullableString_truncatedPayloadReturnsUnexpectedEOF(t *testing.T) {
 	var buf bytes.Buffer
-	binary.Write(&buf, binary.BigEndian, int16(4))
+	_ = binary.Write(&buf, binary.BigEndian, int16(4))
 	buf.Write([]byte("ab"))
 	_, err := NullableString(&buf)
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
@@ -442,7 +442,7 @@ func TestPutBytes_nilEncodesAsEmpty(t *testing.T) {
 
 func TestBytes_nullSentinelReturnsNil(t *testing.T) {
 	var buf bytes.Buffer
-	binary.Write(&buf, binary.BigEndian, int32(-1))
+	_ = binary.Write(&buf, binary.BigEndian, int32(-1))
 	got, err := Bytes(&buf)
 	if err != nil {
 		t.Fatalf("Bytes() error: %v", err)
@@ -454,7 +454,7 @@ func TestBytes_nullSentinelReturnsNil(t *testing.T) {
 
 func TestBytes_truncatedPayloadReturnsUnexpectedEOF(t *testing.T) {
 	var buf bytes.Buffer
-	binary.Write(&buf, binary.BigEndian, int32(10))
+	_ = binary.Write(&buf, binary.BigEndian, int32(10))
 	buf.Write([]byte{0x01, 0x02})
 	_, err := Bytes(&buf)
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
@@ -464,7 +464,7 @@ func TestBytes_truncatedPayloadReturnsUnexpectedEOF(t *testing.T) {
 
 func TestPutBytes_bigEndianByteOrder(t *testing.T) {
 	var buf bytes.Buffer
-	PutBytes(&buf, []byte{0xde, 0xad, 0xbe, 0xef})
+	_, _ = PutBytes(&buf, []byte{0xde, 0xad, 0xbe, 0xef})
 	want := []byte{0x00, 0x00, 0x00, 0x04, 0xde, 0xad, 0xbe, 0xef}
 	if !bytes.Equal(buf.Bytes(), want) {
 		t.Fatalf("PutBytes() = %x, want %x", buf.Bytes(), want)
@@ -539,7 +539,7 @@ func TestPutNullableBytes_nonEmptyRoundTrip(t *testing.T) {
 
 func TestNullableBytes_truncatedPayloadReturnsUnexpectedEOF(t *testing.T) {
 	var buf bytes.Buffer
-	binary.Write(&buf, binary.BigEndian, int32(5))
+	_ = binary.Write(&buf, binary.BigEndian, int32(5))
 	buf.Write([]byte{0x01})
 	_, err := NullableBytes(&buf)
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
@@ -608,7 +608,7 @@ func TestArrayHeader_truncatedReturnsUnexpectedEOF(t *testing.T) {
 
 func TestPutArrayHeader_bigEndianByteOrder(t *testing.T) {
 	var buf bytes.Buffer
-	PutArrayHeader(&buf, 0x00010203)
+	_, _ = PutArrayHeader(&buf, 0x00010203)
 	want := []byte{0x00, 0x01, 0x02, 0x03}
 	if !bytes.Equal(buf.Bytes(), want) {
 		t.Fatalf("PutArrayHeader(0x00010203) = %x, want %x", buf.Bytes(), want)

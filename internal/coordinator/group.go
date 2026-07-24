@@ -40,8 +40,7 @@ type Group struct {
 	ProtocolName string
 	Members      map[string]*Member
 
-	rebalanceTimer *time.Timer
-	mu             sync.Mutex
+	mu sync.Mutex
 }
 
 func generateMemberID(clientID string) string {

@@ -43,17 +43,6 @@ func tryBrokerAddr(b *Broker) (string, bool) {
 	return addr.String(), true
 }
 
-// brokerAddr returns the listening address of a started broker. Use only when
-// the broker is known to be listening.
-func brokerAddr(t *testing.T, b *Broker) string {
-	t.Helper()
-	addr, ok := tryBrokerAddr(b)
-	if !ok {
-		t.Fatal("broker is not listening")
-	}
-	return addr
-}
-
 func startBroker(t *testing.T, cfg *config.Config) (*Broker, string) {
 	t.Helper()
 
@@ -113,7 +102,7 @@ func TestNew_gecerli_config_ile_broker_olusturur(t *testing.T) {
 	if b == nil {
 		t.Fatal("New returned nil broker")
 	}
-	defer b.Shutdown(context.Background())
+	defer func() { _ = b.Shutdown(context.Background()) }()
 
 	if b.config != cfg {
 		t.Error("broker config mismatch")
