@@ -32,7 +32,7 @@ func TestTopic_PartitionFor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTopic error: %v", err)
 	}
-	defer topic.Close()
+	defer func() { _ = topic.Close() }()
 
 	// Same key should always map to same partition
 	key := []byte("user-12345")

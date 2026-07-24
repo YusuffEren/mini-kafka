@@ -24,7 +24,7 @@ func TestBroker_Produce_and_Fetch_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("net.Dial error: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// 1. Prepare record batch
 	rec1 := &storage.Record{
@@ -182,13 +182,13 @@ func TestBroker_LongPolling_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("net.Dial consumer error: %v", err)
 	}
-	defer consumerConn.Close()
+	defer func() { _ = consumerConn.Close() }()
 
 	producerConn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("net.Dial producer error: %v", err)
 	}
-	defer producerConn.Close()
+	defer func() { _ = producerConn.Close() }()
 
 	// Consumer sends Fetch with FetchOffset=0, MaxWaitMs=1000 on an empty log
 	fetchBody := &protocol.FetchRequest{

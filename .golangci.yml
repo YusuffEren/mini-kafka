@@ -3,7 +3,6 @@ version: "2"
 linters:
   enable:
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
@@ -13,15 +12,6 @@ linters:
   settings:
     errcheck:
       check-blank: false
-
-formatters:
-  enable:
-    - gofmt
-
-run:
-  timeout: 5m
-
-issues:
   exclusions:
     rules:
       - path: internal/storage/index_test.go
@@ -32,3 +22,10 @@ issues:
       - path: internal/protocol/codec_test.go
         linters:
           - gofmt
+
+formatters:
+  enable:
+    - gofmt
+
+run:
+  timeout: 5m

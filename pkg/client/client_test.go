@@ -57,13 +57,13 @@ func TestClient_Producer_and_Consumer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewProducer: %v", err)
 	}
-	defer producer.Close()
+	defer func() { _ = producer.Close() }()
 
 	consumer, err := NewConsumer([]string{addr}, DefaultConsumerConfig())
 	if err != nil {
 		t.Fatalf("NewConsumer: %v", err)
 	}
-	defer consumer.Close()
+	defer func() { _ = consumer.Close() }()
 
 	ctx := context.Background()
 
@@ -119,7 +119,7 @@ func TestClient_InvalidBrokerAddress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewProducer: %v", err)
 	}
-	defer producer.Close()
+	defer func() { _ = producer.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()

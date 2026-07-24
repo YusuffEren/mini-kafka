@@ -70,7 +70,7 @@ func TestGroupConsumer_SingleConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new producer: %v", err)
 	}
-	defer prod.Close()
+	defer func() { _ = prod.Close() }()
 
 	ctx := context.Background()
 	topic := "group-test-topic"
@@ -89,7 +89,7 @@ func TestGroupConsumer_SingleConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new group consumer: %v", err)
 	}
-	defer gc.Close()
+	defer func() { _ = gc.Close() }()
 
 	// 3. Poll messages
 	msgs, err := gc.Poll(ctx, 2*time.Second)
@@ -122,7 +122,7 @@ func TestGroupConsumer_Rebalance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gc1 init: %v", err)
 	}
-	defer gc1.Close()
+	defer func() { _ = gc1.Close() }()
 
 	cfg2 := client.DefaultGroupConsumerConfig()
 	cfg2.ClientID = "consumer-2"
@@ -131,7 +131,7 @@ func TestGroupConsumer_Rebalance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gc2 init: %v", err)
 	}
-	defer gc2.Close()
+	defer func() { _ = gc2.Close() }()
 
 	// Both consumers should be running without error
 	ctx := context.Background()
@@ -158,7 +158,7 @@ func TestGroupConsumer_Concurrent_Race(t *testing.T) {
 			if err != nil {
 				return
 			}
-			defer gc.Close()
+			defer func() { _ = gc.Close() }()
 
 			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 			defer cancel()

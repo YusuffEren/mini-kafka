@@ -27,7 +27,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to create consumer: %v", err)
 	}
-	defer consumer.Close()
+	defer func() { _ = consumer.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

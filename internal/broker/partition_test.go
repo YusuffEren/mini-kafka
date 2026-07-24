@@ -14,7 +14,7 @@ func TestPartition_Append_and_Read(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPartition error: %v", err)
 	}
-	defer part.Close()
+	defer func() { _ = part.Close() }()
 
 	var recs []*storage.Record
 	for i := 0; i < 5; i++ {

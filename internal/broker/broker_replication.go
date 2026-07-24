@@ -380,7 +380,7 @@ func (b *Broker) sendReplicaFetch(addr, topic string, partition int32, fetchOffs
 	if err != nil {
 		return nil, 0, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 
 	frame := &protocol.RequestFrame{

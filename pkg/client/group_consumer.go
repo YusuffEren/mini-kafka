@@ -191,7 +191,7 @@ func (gc *GroupConsumer) sendRequest(apiKey int16, payload []byte) (*protocol.Re
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	return gc.sendRequestOnConn(conn, apiKey, payload)
 }

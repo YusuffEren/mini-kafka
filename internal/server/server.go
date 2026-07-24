@@ -125,7 +125,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	atomic.AddInt64(&s.activeConns, 1)
 	defer atomic.AddInt64(&s.activeConns, -1)
 
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	for {
 		req, err := protocol.ReadRequestFrame(conn)

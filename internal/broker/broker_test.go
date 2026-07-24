@@ -151,7 +151,7 @@ func TestBroker_ApiVersions_handler_cevabi_dogru(t *testing.T) {
 	if err != nil {
 		t.Fatalf("net.Dial error: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	req := &protocol.RequestFrame{
 		ApiKey:        12,
@@ -208,7 +208,7 @@ func TestBroker_bilinmeyen_api_key_UnsupportedVersion_doner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("net.Dial error: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	req := &protocol.RequestFrame{
 		ApiKey:        99,
@@ -241,7 +241,7 @@ func TestBroker_Produce_stub_UnknownError_doner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("net.Dial error: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	req := &protocol.RequestFrame{
 		ApiKey:        0,
@@ -274,7 +274,7 @@ func TestBroker_ApiVersions_birden_fazlaki_cevap_donebilir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("net.Dial error: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	for i := int32(1); i <= 3; i++ {
 		req := &protocol.RequestFrame{

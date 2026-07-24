@@ -27,7 +27,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to create producer: %v", err)
 	}
-	defer producer.Close()
+	defer func() { _ = producer.Close() }()
 
 	ctx := context.Background()
 

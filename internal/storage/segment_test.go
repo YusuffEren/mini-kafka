@@ -27,7 +27,7 @@ func newTestSegmentWithDir(t *testing.T, dir string, baseOffset int64, cfg Confi
 // base offset and zero size.
 func TestNewSegment(t *testing.T) {
 	seg := newTestSegment(t, 0, Config{})
-	defer seg.Close()
+	defer func() { _ = seg.Close() }()
 
 	if seg.BaseOffset != 0 {
 		t.Errorf("BaseOffset = %d, want 0", seg.BaseOffset)
@@ -47,7 +47,7 @@ func TestNewSegment(t *testing.T) {
 // segment size grows.
 func TestSegmentAppend(t *testing.T) {
 	seg := newTestSegment(t, 0, Config{})
-	defer seg.Close()
+	defer func() { _ = seg.Close() }()
 
 	for i := 0; i < 10; i++ {
 		rec := &Record{Value: []byte("value")}
@@ -71,7 +71,7 @@ func TestSegmentAppend(t *testing.T) {
 // round-trip integrity.
 func TestSegmentAppendBatch(t *testing.T) {
 	seg := newTestSegment(t, 0, Config{})
-	defer seg.Close()
+	defer func() { _ = seg.Close() }()
 
 	const n = 100
 	for i := 0; i < n; i++ {
@@ -114,7 +114,7 @@ func TestSegmentAppendBatch(t *testing.T) {
 // exactly.
 func TestSegmentRead(t *testing.T) {
 	seg := newTestSegment(t, 0, Config{})
-	defer seg.Close()
+	defer func() { _ = seg.Close() }()
 
 	want := &Record{
 		Offset:    0,
@@ -144,7 +144,7 @@ func TestSegmentRead(t *testing.T) {
 // rejected.
 func TestSegmentReadInvalidOffset(t *testing.T) {
 	seg := newTestSegment(t, 10, Config{})
-	defer seg.Close()
+	defer func() { _ = seg.Close() }()
 
 	if _, err := seg.Append(&Record{Value: []byte("value")}); err != nil {
 		t.Fatalf("Append failed: %v", err)
@@ -160,7 +160,7 @@ func TestSegmentReadInvalidOffset(t *testing.T) {
 // bounded by a byte budget.
 func TestSegmentReadFrom(t *testing.T) {
 	seg := newTestSegment(t, 0, Config{})
-	defer seg.Close()
+	defer func() { _ = seg.Close() }()
 
 	const n = 50
 	for i := 0; i < n; i++ {
@@ -197,7 +197,7 @@ func TestSegmentReadFrom(t *testing.T) {
 // full.
 func TestSegmentIsFull(t *testing.T) {
 	seg := newTestSegment(t, 0, Config{SegmentBytes: 1000})
-	defer seg.Close()
+	defer func() { _ = seg.Close() }()
 
 	if seg.IsFull() {
 		t.Fatalf("IsFull() = true before any append")
@@ -273,7 +273,7 @@ func TestSegmentRemove(t *testing.T) {
 func TestSegmentFlush(t *testing.T) {
 	dir := t.TempDir()
 	seg := newTestSegmentWithDir(t, dir, 0, Config{})
-	defer seg.Close()
+	defer func() { _ = seg.Close() }()
 
 	if _, err := seg.Append(&Record{Value: []byte("value")}); err != nil {
 		t.Fatalf("Append failed: %v", err)
@@ -315,7 +315,7 @@ func TestSegmentReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSegment(reopen) failed: %v", err)
 	}
-	defer seg2.Close()
+	defer func() { _ = seg2.Close() }()
 
 	if seg2.NextOffset != 0 {
 		t.Errorf("NextOffset after reopen = %d, want 0 (no recovery)", seg2.NextOffset)
@@ -333,7 +333,7 @@ func TestSegmentReopen(t *testing.T) {
 // TestSegmentAppendNil checks that appending a nil record returns an error.
 func TestSegmentAppendNil(t *testing.T) {
 	seg := newTestSegment(t, 0, Config{})
-	defer seg.Close()
+	defer func() { _ = seg.Close() }()
 
 	if _, err := seg.Append(nil); err == nil {
 		t.Errorf("Append(nil) returned nil, want error")
@@ -344,7 +344,7 @@ func TestSegmentAppendNil(t *testing.T) {
 // maxBytes returns an empty slice without error.
 func TestSegmentReadFromMaxBytesZero(t *testing.T) {
 	seg := newTestSegment(t, 0, Config{})
-	defer seg.Close()
+	defer func() { _ = seg.Close() }()
 
 	if _, err := seg.Append(&Record{Value: []byte("value")}); err != nil {
 		t.Fatalf("Append failed: %v", err)

@@ -38,7 +38,7 @@ func main() {
 		fmt.Printf("Failed to create temp dir: %v\n", err)
 		os.Exit(1)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -136,7 +136,7 @@ func runProducerBenchmark(addr, scenario string, count, payloadSize int, cfg cli
 		fmt.Printf("producer init err: %v\n", err)
 		return BenchmarkResult{Scenario: scenario}
 	}
-	defer prod.Close()
+	defer func() { _ = prod.Close() }()
 
 	payload := make([]byte, payloadSize)
 	for i := range payload {
@@ -197,7 +197,7 @@ func runConsumerBenchmark(addr, scenario string, count int) BenchmarkResult {
 	for i := 0; i < count; i++ {
 		_, _ = prod.Send(ctx, topic, int32(i%4), []byte(fmt.Sprintf("k-%d", i)), payload)
 	}
-	prod.Close()
+	_ = prod.Close()
 
 	cfg := client.DefaultGroupConsumerConfig()
 	cfg.AutoOffsetReset = "earliest"
@@ -206,7 +206,7 @@ func runConsumerBenchmark(addr, scenario string, count int) BenchmarkResult {
 		fmt.Printf("consumer init err: %v\n", err)
 		return BenchmarkResult{Scenario: scenario}
 	}
-	defer gc.Close()
+	defer func() { _ = gc.Close() }()
 
 	start := time.Now()
 	consumed := 0

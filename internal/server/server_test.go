@@ -76,7 +76,7 @@ func TestServer_roundtrip_echo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("net.Dial error: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	req := &protocol.RequestFrame{
 		ApiKey:        7,
@@ -124,7 +124,7 @@ func TestServer_ApiVersions_cevap_kontrol(t *testing.T) {
 	if err != nil {
 		t.Fatalf("net.Dial error: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	req := &protocol.RequestFrame{
 		ApiKey:        12,
@@ -179,7 +179,7 @@ func TestServer_shutdown_aktif_baglanti_drain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("net.Dial error: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	req := &protocol.RequestFrame{ApiKey: 7, CorrelationID: 1, ClientID: "drain", Payload: []byte{}}
 	sendRequest(t, conn, req)
@@ -206,7 +206,7 @@ func TestServer_shutdown_aktif_baglanti_drain(t *testing.T) {
 
 	// Close the active connection so the server's handleConn loop can exit
 	// and Shutdown can drain the worker goroutine.
-	conn.Close()
+	_ = conn.Close()
 
 	select {
 	case err := <-shutdownDone:
@@ -230,7 +230,7 @@ func TestServer_iki_kez_shutdown_guvenli(t *testing.T) {
 	if err != nil {
 		t.Fatalf("net.Dial error: %v", err)
 	}
-	conn.Close()
+	_ = conn.Close()
 
 	if err := srv.Shutdown(context.Background()); err != nil {
 		t.Fatalf("first Shutdown error: %v", err)
@@ -275,7 +275,7 @@ func TestServer_bilinmeyen_api_key_UnsupportedVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("net.Dial error: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	req := &protocol.RequestFrame{
 		ApiKey:        99,

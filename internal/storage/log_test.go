@@ -31,7 +31,7 @@ func testRecord(offsetHint int) *Record {
 // TestNewLog verifies that a freshly created log reports empty offset range.
 func TestNewLog(t *testing.T) {
 	l := newTestLog(t, Config{})
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	if got := l.LowestOffset(); got != 0 {
 		t.Errorf("LowestOffset() = %d, want 0", got)
@@ -45,7 +45,7 @@ func TestNewLog(t *testing.T) {
 // advance the log end offset.
 func TestLogAppend(t *testing.T) {
 	l := newTestLog(t, Config{})
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	for i := 0; i < 10; i++ {
 		off, err := l.Append(testRecord(i))
@@ -65,7 +65,7 @@ func TestLogAppend(t *testing.T) {
 // range of offsets starting at the returned base offset.
 func TestLogAppendBatch(t *testing.T) {
 	l := newTestLog(t, Config{})
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	const n = 100
 	recs := make([]*Record, n)
@@ -93,7 +93,7 @@ func TestLogAppendBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLog(reopen) failed: %v", err)
 	}
-	defer l2.Close()
+	defer func() { _ = l2.Close() }()
 
 	for i := int64(0); i < n; i++ {
 		rec, err := l2.Read(i)
@@ -129,7 +129,7 @@ func TestLogRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLog(reopen) failed: %v", err)
 	}
-	defer l2.Close()
+	defer func() { _ = l2.Close() }()
 
 	got, err := l2.Read(0)
 	if err != nil {
@@ -161,7 +161,7 @@ func TestLogReadFrom(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLog(reopen) failed: %v", err)
 	}
-	defer l2.Close()
+	defer func() { _ = l2.Close() }()
 
 	recs, err := l2.ReadFrom(10, 1024*1024)
 	if err != nil {
@@ -182,7 +182,7 @@ func TestLogReadFrom(t *testing.T) {
 // returns ErrOffsetOutOfRange.
 func TestLogReadOutOfRange(t *testing.T) {
 	l := newTestLog(t, Config{})
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	if _, err := l.Read(-1); !errors.Is(err, ErrOffsetOutOfRange) {
 		t.Errorf("Read(-1) err = %v, want ErrOffsetOutOfRange", err)
@@ -193,7 +193,7 @@ func TestLogReadOutOfRange(t *testing.T) {
 // asserts that more than one segment is created.
 func TestLogRotation(t *testing.T) {
 	l := newTestLog(t, Config{SegmentBytes: 1000})
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	const n = 100
 	for i := 0; i < n; i++ {
@@ -232,7 +232,7 @@ func TestLogRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLog(recovery) failed: %v", err)
 	}
-	defer l2.Close()
+	defer func() { _ = l2.Close() }()
 
 	if got := l2.HighestOffset(); got != n {
 		t.Errorf("HighestOffset() after recovery = %d, want %d", got, n)
@@ -261,7 +261,7 @@ func TestLogRecovery(t *testing.T) {
 // lower half remains readable.
 func TestLogTruncate(t *testing.T) {
 	l := newTestLog(t, Config{})
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	const n = 20
 	for i := 0; i < n; i++ {
@@ -342,7 +342,7 @@ func TestLogRetentionByBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLog(reopen) failed: %v", err)
 	}
-	defer l2.Close()
+	defer func() { _ = l2.Close() }()
 	time.Sleep(2 * time.Second)
 
 	if segmentsBefore <= l2.NumSegments() {
@@ -361,7 +361,7 @@ func TestLogRetentionByBytes(t *testing.T) {
 // records currently in the log.
 func TestLogLowestHighestOffset(t *testing.T) {
 	l := newTestLog(t, Config{})
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	if got := l.LowestOffset(); got != 0 {
 		t.Errorf("empty LowestOffset() = %d, want 0", got)
@@ -387,7 +387,7 @@ func TestLogLowestHighestOffset(t *testing.T) {
 // TestLogAppendNil checks that appending a nil record returns an error.
 func TestLogAppendNil(t *testing.T) {
 	l := newTestLog(t, Config{})
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	if _, err := l.Append(nil); err == nil {
 		t.Errorf("Append(nil) returned nil, want error")
@@ -397,7 +397,7 @@ func TestLogAppendNil(t *testing.T) {
 // TestLogAppendBatchEmpty checks that an empty batch returns an error.
 func TestLogAppendBatchEmpty(t *testing.T) {
 	l := newTestLog(t, Config{})
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	if _, err := l.AppendBatch(nil); !errors.Is(err, ErrEmptyLog) {
 		t.Errorf("AppendBatch(nil) err = %v, want ErrEmptyLog", err)
@@ -411,7 +411,7 @@ func TestLogAppendBatchEmpty(t *testing.T) {
 // returns an empty slice without error.
 func TestLogReadFromMaxBytesZero(t *testing.T) {
 	l := newTestLog(t, Config{})
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	if _, err := l.Append(testRecord(0)); err != nil {
 		t.Fatalf("Append failed: %v", err)
