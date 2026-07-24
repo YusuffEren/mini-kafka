@@ -242,6 +242,8 @@ func handleApiVersions(_ *protocol.RequestFrame) (*protocol.ResponseFrame, error
 			{ApiKey: apiKeyLeaveGroup, MinVersion: 1, MaxVersion: 1},
 			{ApiKey: apiKeyOffsetCommit, MinVersion: 1, MaxVersion: 1},
 			{ApiKey: apiKeyOffsetFetch, MinVersion: 1, MaxVersion: 1},
+			{ApiKey: apiKeyListOffsets, MinVersion: 1, MaxVersion: 1},
+			{ApiKey: apiKeyReplicaFetch, MinVersion: 1, MaxVersion: 1},
 			{ApiKey: apiKeyApiVersions, MinVersion: 0, MaxVersion: 0},
 		},
 	}
