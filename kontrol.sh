@@ -53,9 +53,8 @@ baslik "1. Bicim kontrolu (gofmt)"
 if var gofmt; then
   printf '  %-28s' "gofmt -l"
   set +e
-  local FARK
   FARK="$(gofmt -l . 2>&1)"
-  local rc=$?
+  rc=$?
   set -e
   if [ $rc -ne 0 ]; then
     kirmizi "KALDI (gofmt basarisiz)"
