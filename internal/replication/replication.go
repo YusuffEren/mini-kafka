@@ -9,16 +9,16 @@ import (
 
 // ProduceRequestItem represents an in-flight acks=all Produce request awaiting HW progress.
 type ProduceRequestItem struct {
-	ID        int64
-	Topic     string
-	Partition int32
+	ID         int64
+	Topic      string
+	Partition  int32
 	RequiredHW int64
-	RespCh    chan error
+	RespCh     chan error
 }
 
 // Purgatory manages pending acks=all requests awaiting replication completion.
 type Purgatory struct {
-	items map[int64]*ProduceRequestItem
+	items  map[int64]*ProduceRequestItem
 	nextID int64
 }
 

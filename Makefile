@@ -15,9 +15,7 @@ test-integration:
 	go test ./test/integration/... -tags=integration -count=1
 
 lint:
-	gofmt -l .
-	go vet ./...
-	golangci-lint run
+	./kontrol.sh
 
 bench:
 	go test ./benchmark/... -bench=. -benchmem -benchtime=10s

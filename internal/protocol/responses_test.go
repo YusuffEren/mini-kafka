@@ -478,4 +478,3 @@ func TestCreateTopicsResponse_roundTrip(t *testing.T) {
 		}
 	}
 }
-

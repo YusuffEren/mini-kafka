@@ -13,6 +13,7 @@ import (
 	"github.com/yusuf/mini-kafka/internal/config"
 	"github.com/yusuf/mini-kafka/internal/coordinator"
 	"github.com/yusuf/mini-kafka/internal/protocol"
+	"github.com/yusuf/mini-kafka/internal/replication"
 	"github.com/yusuf/mini-kafka/internal/server"
 	"github.com/yusuf/mini-kafka/internal/storage"
 )
@@ -29,6 +30,7 @@ const (
 	apiKeyOffsetCommit int16 = 8
 	apiKeyOffsetFetch  int16 = 9
 	apiKeyListOffsets  int16 = 10
+	apiKeyReplicaFetch int16 = 11
 	apiKeyApiVersions  int16 = 12
 )
 
@@ -90,6 +92,7 @@ func New(cfg *config.Config) (*Broker, error) {
 	mux.Handle(apiKeyOffsetCommit, b.handleOffsetCommit)
 	mux.Handle(apiKeyOffsetFetch, b.handleOffsetFetch)
 	mux.Handle(apiKeyListOffsets, b.handleListOffsets)
+	mux.Handle(apiKeyReplicaFetch, b.handleReplicaFetch)
 	b.mux = mux
 
 	addr := fmt.Sprintf("%s:%d", cfg.Broker.Host, cfg.Broker.Port)
@@ -553,7 +556,6 @@ func (b *Broker) handleJoinGroup(req *protocol.RequestFrame) (*protocol.Response
 	return &protocol.ResponseFrame{ErrorCode: 0, Payload: body.Bytes()}, nil
 }
 
-
 // handleSyncGroup handles SyncGroup requests (apiKey 5).
 func (b *Broker) handleSyncGroup(req *protocol.RequestFrame) (*protocol.ResponseFrame, error) {
 	var syncReq protocol.SyncGroupRequest
@@ -738,4 +740,46 @@ func (b *Broker) handleListOffsets(req *protocol.RequestFrame) (*protocol.Respon
 		return nil, err
 	}
 	return &protocol.ResponseFrame{ErrorCode: 0, Payload: body.Bytes()}, nil
+}
+
+// handleReplicaFetch handles ReplicaFetch requests (apiKey 11).
+func (b *Broker) handleReplicaFetch(req *protocol.RequestFrame) (*protocol.ResponseFrame, error) {
+	replicaReq, err := replication.DecodeReplicaFetchRequest(req.Payload)
+	if err != nil {
+		return &protocol.ResponseFrame{ErrorCode: server.ErrUnknown}, nil
+	}
+
+	b.mu.RLock()
+	t, ok := b.topics[replicaReq.Topic]
+	b.mu.RUnlock()
+	if !ok {
+		return &protocol.ResponseFrame{ErrorCode: server.ErrUnknownTopicOrPartition}, nil
+	}
+
+	p := t.GetPartition(replicaReq.Partition)
+	if p == nil {
+		return &protocol.ResponseFrame{ErrorCode: server.ErrUnknownTopicOrPartition}, nil
+	}
+
+	records, err := p.ReadFrom(replicaReq.FetchOffset, 1024*1024)
+	if err != nil {
+		return &protocol.ResponseFrame{ErrorCode: server.ErrUnknown}, nil
+	}
+
+	var payload bytes.Buffer
+	if _, err := protocol.PutInt16(&payload, 0); err != nil {
+		return nil, err
+	}
+	if _, err := protocol.PutInt64(&payload, p.HighWatermark()); err != nil {
+		return nil, err
+	}
+
+	for _, rec := range records {
+		var recBuf bytes.Buffer
+		if _, err := rec.Encode(&recBuf); err == nil {
+			payload.Write(recBuf.Bytes())
+		}
+	}
+
+	return &protocol.ResponseFrame{ErrorCode: 0, Payload: payload.Bytes()}, nil
 }

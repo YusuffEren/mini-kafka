@@ -339,3 +339,16 @@ func ArrayHeader(r io.Reader) (int, error) {
 	}
 	return int(v), nil
 }
+
+// ReadArrayHeader reads ArrayHeader and enforces a safety cap of 100,000 elements
+// to prevent OOM/excessive allocations when decoding arbitrary or corrupted frames.
+func ReadArrayHeader(r io.Reader) (int, error) {
+	count, err := ArrayHeader(r)
+	if err != nil {
+		return 0, err
+	}
+	if count > 100000 {
+		return 0, errors.New("protocol: array element count exceeds safety limit")
+	}
+	return count, nil
+}

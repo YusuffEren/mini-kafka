@@ -917,5 +917,3 @@ func (r *ListOffsetsResponse) Decode(rd io.Reader) error {
 	}
 	return nil
 }
-
-

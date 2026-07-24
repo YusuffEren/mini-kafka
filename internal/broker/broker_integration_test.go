@@ -247,7 +247,7 @@ func TestBroker_LongPolling_Integration(t *testing.T) {
 		}
 
 		var produceReqPayload bytes.Buffer
-		_ = produceBody.Encode(&produceReqPayload);
+		_ = produceBody.Encode(&produceReqPayload)
 		reqFrame := &protocol.RequestFrame{
 			ApiKey:        apiKeyProduce,
 			ApiVersion:    1,

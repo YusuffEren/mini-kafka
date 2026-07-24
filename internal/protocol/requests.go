@@ -92,7 +92,7 @@ func (r *ProduceRequest) Decode(rd io.Reader) error {
 	}
 	r.TimeoutMs = timeoutMs
 
-	topicCount, err := ArrayHeader(rd)
+	topicCount, err := ReadArrayHeader(rd)
 	if err != nil {
 		return err
 	}
@@ -106,7 +106,7 @@ func (r *ProduceRequest) Decode(rd io.Reader) error {
 		if t.Name, err = String(rd); err != nil {
 			return err
 		}
-		partCount, err := ArrayHeader(rd)
+		partCount, err := ReadArrayHeader(rd)
 		if err != nil {
 			return err
 		}
@@ -230,7 +230,7 @@ func (r *FetchRequest) Decode(rd io.Reader) error {
 	}
 	r.MaxBytes = maxBytes
 
-	topicCount, err := ArrayHeader(rd)
+	topicCount, err := ReadArrayHeader(rd)
 	if err != nil {
 		return err
 	}
@@ -244,7 +244,7 @@ func (r *FetchRequest) Decode(rd io.Reader) error {
 		if t.Name, err = String(rd); err != nil {
 			return err
 		}
-		partCount, err := ArrayHeader(rd)
+		partCount, err := ReadArrayHeader(rd)
 		if err != nil {
 			return err
 		}
@@ -316,7 +316,7 @@ func (r *MetadataRequest) Encode(w io.Writer) error {
 
 // Decode reads the MetadataRequest body from rd.
 func (r *MetadataRequest) Decode(rd io.Reader) error {
-	count, err := ArrayHeader(rd)
+	count, err := ReadArrayHeader(rd)
 	if err != nil {
 		return err
 	}
@@ -368,7 +368,7 @@ func (r *CreateTopicsRequest) Encode(w io.Writer) error {
 
 // Decode reads the CreateTopicsRequest body from rd.
 func (r *CreateTopicsRequest) Decode(rd io.Reader) error {
-	count, err := ArrayHeader(rd)
+	count, err := ReadArrayHeader(rd)
 	if err != nil {
 		return err
 	}
@@ -450,7 +450,7 @@ func (r *JoinGroupRequest) Decode(rd io.Reader) error {
 	if r.ProtocolType, err = String(rd); err != nil {
 		return err
 	}
-	count, err := ArrayHeader(rd)
+	count, err := ReadArrayHeader(rd)
 	if err != nil {
 		return err
 	}
@@ -478,10 +478,10 @@ type SyncGroupAssignment struct {
 
 // SyncGroupRequest (apiKey 5)
 type SyncGroupRequest struct {
-	GroupID     string
+	GroupID      string
 	GenerationID int32
-	MemberID    string
-	Assignments []SyncGroupAssignment
+	MemberID     string
+	Assignments  []SyncGroupAssignment
 }
 
 func (r *SyncGroupRequest) Encode(w io.Writer) error {
@@ -519,7 +519,7 @@ func (r *SyncGroupRequest) Decode(rd io.Reader) error {
 	if r.MemberID, err = String(rd); err != nil {
 		return err
 	}
-	count, err := ArrayHeader(rd)
+	count, err := ReadArrayHeader(rd)
 	if err != nil {
 		return err
 	}
@@ -667,7 +667,7 @@ func (r *OffsetCommitRequest) Decode(rd io.Reader) error {
 	if r.MemberID, err = String(rd); err != nil {
 		return err
 	}
-	tCount, err := ArrayHeader(rd)
+	tCount, err := ReadArrayHeader(rd)
 	if err != nil {
 		return err
 	}
@@ -678,7 +678,7 @@ func (r *OffsetCommitRequest) Decode(rd io.Reader) error {
 			if t.Name, err = String(rd); err != nil {
 				return err
 			}
-			pCount, err := ArrayHeader(rd)
+			pCount, err := ReadArrayHeader(rd)
 			if err != nil {
 				return err
 			}
@@ -744,7 +744,7 @@ func (r *OffsetFetchRequest) Decode(rd io.Reader) error {
 	if r.GroupID, err = String(rd); err != nil {
 		return err
 	}
-	tCount, err := ArrayHeader(rd)
+	tCount, err := ReadArrayHeader(rd)
 	if err != nil {
 		return err
 	}
@@ -755,7 +755,7 @@ func (r *OffsetFetchRequest) Decode(rd io.Reader) error {
 			if t.Name, err = String(rd); err != nil {
 				return err
 			}
-			pCount, err := ArrayHeader(rd)
+			pCount, err := ReadArrayHeader(rd)
 			if err != nil {
 				return err
 			}
@@ -814,7 +814,7 @@ func (r *ListOffsetsRequest) Encode(w io.Writer) error {
 }
 
 func (r *ListOffsetsRequest) Decode(rd io.Reader) error {
-	tCount, err := ArrayHeader(rd)
+	tCount, err := ReadArrayHeader(rd)
 	if err != nil {
 		return err
 	}
@@ -826,7 +826,7 @@ func (r *ListOffsetsRequest) Decode(rd io.Reader) error {
 			if t.Name, err = String(rd); err != nil {
 				return err
 			}
-			pCount, err := ArrayHeader(rd)
+			pCount, err := ReadArrayHeader(rd)
 			if err != nil {
 				return err
 			}
@@ -848,5 +848,3 @@ func (r *ListOffsetsRequest) Decode(rd io.Reader) error {
 	}
 	return nil
 }
-
-

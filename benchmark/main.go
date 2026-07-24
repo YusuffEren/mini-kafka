@@ -7,9 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/yusuf/mini-kafka/internal/broker"
@@ -18,15 +16,15 @@ import (
 )
 
 type BenchmarkResult struct {
-	Scenario       string  `json:"scenario"`
-	DurationMs     int64   `json:"duration_ms"`
-	TotalMessages  int     `json:"total_messages"`
-	MsgPerSec      float64 `json:"msg_per_sec"`
-	MBPerSec       float64 `json:"mb_per_sec"`
-	P50LatencyMs   float64 `json:"p50_latency_ms"`
-	P95LatencyMs   float64 `json:"p95_latency_ms"`
-	P99LatencyMs   float64 `json:"p99_latency_ms"`
-	P999LatencyMs  float64 `json:"p999_latency_ms"`
+	Scenario      string  `json:"scenario"`
+	DurationMs    int64   `json:"duration_ms"`
+	TotalMessages int     `json:"total_messages"`
+	MsgPerSec     float64 `json:"msg_per_sec"`
+	MBPerSec      float64 `json:"mb_per_sec"`
+	P50LatencyMs  float64 `json:"p50_latency_ms"`
+	P95LatencyMs  float64 `json:"p95_latency_ms"`
+	P99LatencyMs  float64 `json:"p99_latency_ms"`
+	P999LatencyMs float64 `json:"p999_latency_ms"`
 }
 
 func main() {

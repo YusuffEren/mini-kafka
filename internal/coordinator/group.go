@@ -16,9 +16,9 @@ type GroupState string
 
 const (
 	StateEmpty               GroupState = "Empty"
-	StatePreparingRebalance GroupState = "PreparingRebalance"
+	StatePreparingRebalance  GroupState = "PreparingRebalance"
 	StateCompletingRebalance GroupState = "CompletingRebalance"
-	StateStable             GroupState = "Stable"
+	StateStable              GroupState = "Stable"
 )
 
 type Member struct {

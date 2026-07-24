@@ -475,4 +475,3 @@ func TestCreateTopicsRequest_roundTrip(t *testing.T) {
 		}
 	}
 }
-
