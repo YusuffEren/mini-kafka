@@ -13,6 +13,7 @@ import (
 type Server struct {
 	addr        string
 	listener    net.Listener
+	mu          sync.RWMutex
 	mux         *Mux
 	done        chan struct{}
 	wg          sync.WaitGroup
@@ -43,7 +44,9 @@ func (s *Server) Start() error {
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
 	s.listener = ln
+	s.mu.Unlock()
 
 	for {
 		conn, err := ln.Accept()
@@ -76,6 +79,8 @@ func (s *Server) Start() error {
 
 // Addr returns the network address the server is listening on, or nil if not listening.
 func (s *Server) Addr() net.Addr {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.listener == nil {
 		return nil
 	}
@@ -94,9 +99,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		close(s.done)
 	}
 
+	s.mu.Lock()
 	if s.listener != nil {
 		_ = s.listener.Close()
 	}
+	s.mu.Unlock()
 
 	done := make(chan struct{})
 	go func() {
