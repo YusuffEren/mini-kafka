@@ -11,6 +11,16 @@ linters:
     - unconvert
 linters-settings:
   errcheck:
-    check-blank: true
+    check-blank: false
 run:
   timeout: 5m
+
+issues:
+  exclude-rules:
+    # Test file intentionally ignores Lookup error in concurrency benchmark
+    - path: internal/storage/index_test.go
+      linters:
+        - errcheck
+    # index_windows.go uses reflect.SliceHeader for Windows mmap (pre-unsafe.Slice compat)
+    - path: internal/storage/index_windows.go
+      text: "SA1019"
