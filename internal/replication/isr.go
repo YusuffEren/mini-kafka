@@ -61,6 +61,12 @@ func NewISRTracker(dataDir, topic string, partition int32, leaderID int32, repli
 }
 
 // UpdateLEO updates a replica's LEO and caught-up timestamp, re-evaluates ISR, and returns updated HW.
+//
+// LEO updates are monotonic per replica: a stale concurrent update carrying an
+// older offset must not overwrite a newer one. Without this, concurrent
+// acks=all produces on the same partition race after AppendBatch — the slower
+// goroutine can push leader LEO (and therefore HW) backwards, leaving
+// purgatory waiters blocked until TimeoutMs.
 func (t *ISRTracker) UpdateLEO(brokerID int32, leo int64, leaderLEO int64) int64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -75,11 +81,22 @@ func (t *ISRTracker) UpdateLEO(brokerID int32, leo int64, leaderLEO int64) int64
 			InSync:           true,
 		}
 		t.replicas[brokerID] = rep
-	} else {
+	} else if leo > rep.LogEndOffset {
+		// Only advance. Concurrent produce handlers may observe LEO in a
+		// different order than they call UpdateLEO; never regress.
 		rep.LogEndOffset = leo
-		if leo >= leaderLEO {
-			rep.LastCaughtUpTime = now
-		}
+	}
+
+	// Caught-up check uses the best-known leader LEO so a stale leaderLEO
+	// argument cannot falsely mark a lagging follower as caught up... and
+	// conversely, after a monotonic leader advance, followers that truly
+	// match still get credit when leaderLEO is slightly behind.
+	effectiveLeaderLEO := leaderLEO
+	if leader, ok := t.replicas[t.leaderID]; ok && leader.LogEndOffset > effectiveLeaderLEO {
+		effectiveLeaderLEO = leader.LogEndOffset
+	}
+	if rep.LogEndOffset >= effectiveLeaderLEO {
+		rep.LastCaughtUpTime = now
 	}
 
 	t.updateISRLocked(now)
@@ -110,7 +127,9 @@ func (t *ISRTracker) calculateHWLocked() int64 {
 			}
 		}
 	}
-	if minLEO >= 0 {
+	// HW is monotonic under a stable leader (Kafka semantics). Never let a
+	// transient ISR/LEO snapshot pull it backwards.
+	if minLEO > t.highWatermark {
 		t.highWatermark = minLEO
 	}
 	return t.highWatermark

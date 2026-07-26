@@ -163,10 +163,13 @@ func (p *Partition) HighWatermark() int64 {
 }
 
 // SetHighWatermark updates the high watermark for this partition (used in replication).
+// HW is monotonic: a concurrent stale update must not move it backwards.
 func (p *Partition) SetHighWatermark(hw int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.highWatermark = hw
+	if hw > p.highWatermark {
+		p.highWatermark = hw
+	}
 }
 
 // LogStartOffset returns lowest offset in partition.

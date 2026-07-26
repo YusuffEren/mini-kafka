@@ -1,6 +1,7 @@
 package replication_test
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -35,6 +36,31 @@ func TestISRTracker_HW_Calculation(t *testing.T) {
 	tracker2 := replication.NewISRTracker(dir, "test-topic", 0, 1, []int32{1, 2, 3}, 30000)
 	if tracker2.HighWatermark() != 80 {
 		t.Fatalf("expected reloaded HW=80, got %d", tracker2.HighWatermark())
+	}
+}
+
+// TestISRTracker_UpdateLEO_MonotonicConcurrent reproduces the acks=all @ N
+// producers race: many goroutines observe increasing LEOs after append but
+// call UpdateLEO out of order. Stale lower LEOs must not regress HW.
+func TestISRTracker_UpdateLEO_MonotonicConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	// Single-broker ISR (min_insync_replicas=1 benchmark shape).
+	tracker := replication.NewISRTracker(dir, "bench-topic", 0, 1, []int32{1}, 30000)
+
+	const n = 500
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := int64(1); i <= n; i++ {
+		go func(leo int64) {
+			defer wg.Done()
+			// Deliberately pass leaderLEO == leo the way handleProduce does.
+			_ = tracker.UpdateLEO(1, leo, leo)
+		}(i)
+	}
+	wg.Wait()
+
+	if hw := tracker.HighWatermark(); hw != n {
+		t.Fatalf("expected HW=%d after concurrent monotonic updates, got %d", n, hw)
 	}
 }
 

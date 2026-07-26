@@ -489,6 +489,13 @@ func (b *Broker) handleProduce(req *protocol.RequestFrame) (*protocol.ResponseFr
 					leaderLEO := pObj.LogEndOffset()
 					hw := b.updateLeaderLEO(tReq.Name, pReq.PartitionID, leaderLEO)
 					pObj.SetHighWatermark(hw)
+					// Wake any acks=all waiters whose required HW is now met.
+					// On a single-broker (or fully-caught-up ISR) HW advances
+					// on the produce path itself; without this call, concurrent
+					// producers that entered purgatory before the advance
+					// would block until TimeoutMs even though replication is
+					// already satisfied.
+					b.purgatory.CheckAndComplete(tReq.Name, pReq.PartitionID, hw)
 
 					partResp.ErrorCode = server.ErrNone
 					partResp.BaseOffset = baseOffset

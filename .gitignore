@@ -4,9 +4,14 @@
 *.test
 coverage.html
 coverage*
+cover*
 cover
 /data/
 .env
 /test/**/*.log
 benchmark_results.json
+results.json
 *.exe
+test.md
+bench_md_test.json
+results_multi.json

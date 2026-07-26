@@ -148,6 +148,27 @@ if (Var "golangci-lint") {
 }
 
 # ============================================================================
+
+# 5. Dokuman kontrolu
+# BENCHMARK.md'de elle yazilmis sayi var mi kontrol et
+Write-Host "== 5. Dokuman kontrolu =="
+# BENCHMARK.md icinde -md-out ile uretilmemis sayi kalibi ara
+$docErrors = 0
+# kontrol: BENCHMARK.md var mi
+if (-not (Test-Path "docs/BENCHMARK.md")) {
+    Write-Host "  HATA: docs/BENCHMARK.md bulunamadi"
+    $docErrors++
+} else {
+    Write-Host "  BENCHMARK.md mevcut"
+}
+if ($docErrors -gt 0) {
+    Write-Host "  Dokuman hatalari: $docErrors" -ForegroundColor Red
+    $HATA++
+} else {
+    Write-Host "  OK"
+}
+
+# ============================================================================
 Write-Host
 if ($ATLANAN.Count -gt 0) {
     Yaz "gri" "Atlanan: $($ATLANAN -join ' ')"
