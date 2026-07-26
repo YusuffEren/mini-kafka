@@ -29,6 +29,15 @@ Go ile yazılmış, Apache Kafka'nın mimarisinden (segment'li log, sparse index
 - Consumer group rebalance: Range ve RoundRobin stratejileri.
 - CLI araçları: `cmd/producer`, `cmd/consumer`.
 
+Duzeltilmis bir eszamanlilik hatasi: acks=all ile 16 eszamanli producer
+calistirildiginda throughput ~300 msg/s'ye cokuyor, istekler 30 saniyelik
+RequestTimeoutMs ile timeout'a dusuyordu. Kok neden iki parcaydi: (1) ISR
+tracker'inda LEO guncellemesi monotonik degildi — eszamanli append'lerde
+eski LEO yeni degerin uzerine yaziliyor, High Watermark geriye kayiyordu.
+(2) Produce yolunda purgatory.CheckAndComplete cagrilmadigi icin HW tekrar
+ilerlese bile bekleyen istekler uyanmiyordu. Duzenleme sonrasi ayni senaryoda
+81153 msg/s (0 hata). Detayli analiz ve testler commit gecmisinde.
+
 ## Hızlı başlangıç
 
 Gereksinimler: Go 1.25+, `make` (opsiyonel).

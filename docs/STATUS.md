@@ -13,7 +13,7 @@
 - W5 (Temizlik) ✓ Tamamlandi — T-50..T-58
 
 ## Ozet
-Tum dalgalar (W0-W5) tamamlandi. 33/33 gorev. kontrol.ps1 KAPI YESIL.
+TUM GOREVLER TAMAMLANDI. AGENT_PLAN 33/33. kontrol.ps1 KAPI YESIL.
 
 ## Son Test
 go test ./... -count=1 → 8/8 OK

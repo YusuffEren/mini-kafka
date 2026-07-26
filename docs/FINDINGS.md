@@ -37,3 +37,9 @@ separate task.
 shared contract, but the primary concurrency hazard there is lower than in
 `Producer`/`Consumer`. Consolidating `GroupConsumer` onto a single shared
 connection (and then benefiting from `reqMu`) is also future work.
+
+### LEO Monotoniklik ve acks=all Yarisi (2026-07-26)
+- internal/replication/isr.go: UpdateLEO artık monotonik; yeni LEO eskisinden kucukse guncelleme yapilmaz.
+- internal/broker/partition.go: SetHighWatermark monotonic.
+- internal/broker/broker.go: handleProduce sonunda purgatory.CheckAndComplete cagrilir.
+- Etki: acks=all @ 16 producer: 300 msg/s → 81153 msg/s. Test: replication_test.go eszamanli monotonic LEO.

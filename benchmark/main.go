@@ -57,6 +57,11 @@ type BenchmarkResult struct {
 	// BatchFillRatio is set only for LingerMs > 0 scenarios (average of
 	// batch_bytes/BatchSize across flushes). Omitted from JSON otherwise.
 	BatchFillRatio *float64 `json:"batch_fill_ratio,omitempty"`
+	// BatchingSenders is set only for the batching scenario: the number of
+	// concurrent Send goroutines (M) driving the shared Producer. It is
+	// distinct from Producers (the -producers flag value) so the two are
+	// reported independently. Omitted from JSON otherwise.
+	BatchingSenders *int `json:"batching_senders,omitempty"`
 }
 
 // Report is the top-level JSON document: the environment block followed by
@@ -521,25 +526,22 @@ func runProducerBenchmark(addr, scenario string, count, payloadSize int, cfg cli
 // fill the same pending batch (Producer is concurrent-safe via reqMu/batch.mu)
 // and yield a realistic batch_fill_ratio.
 //
-// M is at least the -producers value. When that would leave batches half-empty
-// (Send is synchronous per goroutine), M is raised so concurrent enqueues can
-// fill >50% of BatchSize before linger/size flush. Producers in the result is M.
-func runBatchingBenchmark(addr, scenario string, count, payloadSize int, cfg client.ProducerConfig, m int) BenchmarkResult {
+// M (the number of concurrent Send goroutines) is derived from the -producers
+// value as M = producers * 2 so that batch_fill_ratio scales honestly with the
+// requested producer count: producers=1 → M=2 (sparse batches), producers=16 →
+// M=32 (genuinely filled batches). The reported Producers column reflects the
+// -producers flag value; the internal M is exposed separately as
+// BatchingSenders so the two are not conflated.
+func runBatchingBenchmark(addr, scenario string, count, payloadSize int, cfg client.ProducerConfig, producers int) BenchmarkResult {
 	fmt.Fprintf(os.Stderr, "Running: %s ... ", scenario)
-	if m < 1 {
-		m = 1
+	if producers < 1 {
+		producers = 1
 	}
-	// One in-flight record per goroutine until flush. Size records roughly as
-	// payload + small encoding overhead so minM targets fill_ratio > 0.5.
-	if cfg.BatchSize > 0 && payloadSize > 0 {
-		recApprox := payloadSize + 64
-		minM := (cfg.BatchSize/2)/recApprox + 1
-		if minM < 2 {
-			minM = 2
-		}
-		if m < minM {
-			m = minM
-		}
+	// M scales with the requested producer count so batch_fill_ratio varies
+	// meaningfully across the scaling curve instead of being pinned near 0.5.
+	m := producers * 2
+	if m < 2 {
+		m = 2
 	}
 
 	payload := make([]byte, payloadSize)
@@ -553,7 +555,7 @@ func runBatchingBenchmark(addr, scenario string, count, payloadSize int, cfg cli
 	prod, err := client.NewProducer([]string{addr}, cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "producer init err: %v\n", err)
-		return BenchmarkResult{Scenario: scenario, Producers: m}
+		return BenchmarkResult{Scenario: scenario, Producers: producers}
 	}
 	defer func() { _ = prod.Close() }()
 
@@ -644,9 +646,11 @@ func runBatchingBenchmark(addr, scenario string, count, payloadSize int, cfg cli
 
 	p50us, p95us, p99us, maxUs := latencyStatsUs(allLatency)
 
+	// Capture M into a stable address so the pointer can escape safely.
+	senders := m
 	res := BenchmarkResult{
 		Scenario:         scenario,
-		Producers:        m,
+		Producers:        producers,
 		DurationMs:       durMs,
 		TotalMessages:    count,
 		WarmupMessages:   warmupTotal,
@@ -662,6 +666,7 @@ func runBatchingBenchmark(addr, scenario string, count, payloadSize int, cfg cli
 		P99LatencyMs:     p99us / 1000.0,
 		MaxLatencyMs:     maxUs / 1000.0,
 		BatchFillRatio:   batchFill,
+		BatchingSenders:  &senders,
 	}
 
 	fillNote := ""
