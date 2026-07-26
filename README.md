@@ -35,8 +35,9 @@ RequestTimeoutMs ile timeout'a dusuyordu. Kok neden iki parcaydi: (1) ISR
 tracker'inda LEO guncellemesi monotonik degildi — eszamanli append'lerde
 eski LEO yeni degerin uzerine yaziliyor, High Watermark geriye kayiyordu.
 (2) Produce yolunda purgatory.CheckAndComplete cagrilmadigi icin HW tekrar
-ilerlese bile bekleyen istekler uyanmiyordu. Duzenleme sonrasi ayni senaryoda
-81153 msg/s (0 hata). Detayli analiz ve testler commit gecmisinde.
+ilerlese bile bekleyen istekler uyanmiyordu. Duzenleme sonrasi ayni senaryoda ~300 msg/s'den iki mertebe
+yukariya cikti (guncel rakamlar: docs/BENCHMARK.md). Detayli analiz
+ve testler commit gecmisinde.
 
 ## Hızlı başlangıç
 

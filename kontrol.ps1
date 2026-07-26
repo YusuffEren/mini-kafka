@@ -152,38 +152,51 @@ if (Var "golangci-lint") {
 # 5. Dokuman kontrolu
 Write-Host "== 5. Dokuman kontrolu =="
 $docErrors = 0
-if (-not (Test-Path "docs/BENCHMARK.md")) {
-    Write-Host "  HATA: docs/BENCHMARK.md bulunamadi"
-    $docErrors++
-} else {
-    $content = Get-Content "docs/BENCHMARK.md" -Raw
-    # Cift baslik kontrolu
-    $ortamCount = ([regex]::Matches($content, "^## Ortam$")).Count
-    $sonucCount = ([regex]::Matches($content, "^## Sonu..lar$")).Count
-    if ($ortamCount -gt 1) { Write-Host "  HATA: $ortamCount adet '## Ortam' basligi (1 olmali)"; $docErrors++ }
-    if ($sonucCount -gt 1) { Write-Host "  HATA: $sonucCount adet '## Sonuc' basligi (1 olmali)"; $docErrors++ }
-    # Elle yazilmis sayi suphesi (tablo disinda rakam kalibi)
-    $manualNumbers = Select-String -Path "docs/BENCHMARK.md" -Pattern "\d+\.\d+\s*(msg/s|ms|us)" | Where-Object { $_.Line -notmatch "^\\|" -and $_.LineNumber -gt 0 }
-    # Temel bolum kontrolu
-    foreach ($section in @("Ortam", "Metodoloji", "Sonuçlar", "Analiz", "Olculmeyenler")) {
-        if ($content -notmatch "## $section") {
-            Write-Host "  HATA: '$section' bolumu eksik"
-            $docErrors++
+
+# Encoding ve NUL byte kontrolu
+$mdFiles = git ls-files '*.md' 2>$null
+if (-not $mdFiles) { $mdFiles = @(Get-ChildItem -Recurse -Filter *.md | ForEach-Object { $_.FullName }) }
+foreach ($f in $mdFiles) {
+    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $f))
+    if ($bytes.Length -ge 2) {
+        if (($bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) -or ($bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF)) {
+            Write-Host "  HATA: $f UTF-16"; $docErrors++
         }
     }
-    if ($docErrors -eq 0) { Write-Host "  OK ($ortamCount Ortam, $sonucCount Sonuc)" }
+    if ($bytes -contains 0) {
+        Write-Host "  HATA: $f NUL byte iceriyor"; $docErrors++
+    }
 }
-if ($docErrors -gt 0) { Write-Host "  Dokuman hatalari: $docErrors" -ForegroundColor Red; $HATA++ }
+
+# Bolum kontrolu
+if (Test-Path "docs/BENCHMARK.md") {
+    $content = Get-Content "docs/BENCHMARK.md" -Raw -Encoding UTF8
+    $sections = @("Ortam", "Metodoloji", "Sonu.lar", "Analiz", "Olculmeyenler")
+    foreach ($s in $sections) {
+        $n = ([regex]::Matches($content, "^## $s`$", [System.Text.RegularExpressions.RegexOptions]::Multiline)).Count
+        if ($n -ne 1) {
+            Write-Host "  HATA: '## $s' sayisi $n (1 olmali)"; $docErrors++
+        }
+    }
+    # Ilk karakter kontrolu
+    if ($content.Length -gt 0 -and $content[0] -ne '#') {
+        Write-Host "  HATA: BENCHMARK.md '#' ile baslamiyor"; $docErrors++
+    }
+} else {
+    Write-Host "  HATA: docs/BENCHMARK.md bulunamadi"; $docErrors++
+}
+
+if ($docErrors -eq 0) { Write-Host "  OK" } else { Write-Host "  Dokuman hatalari: $docErrors" -ForegroundColor Red; $script:HATA++ }
 
 # ============================================================================
 Write-Host
 if ($ATLANAN.Count -gt 0) {
     Yaz "gri" "Atlanan: $($ATLANAN -join ' ')"
 }
-if ($HATA -eq 0) {
-    Yaz "yesil" "KAPI YESIL — butun adimlar gecti."
-    exit 0
-} else {
-    Yaz "kirmizi" "KAPI KIRMIZI — yukaridaki adimlar duzeltilmeden gorev kapatilamaz."
+if ($HATA -ne 0) {
+    Write-Host "`nKAPI KIRMIZI — $HATA adim basarisiz.`n" -ForegroundColor Red
     exit 1
+} else {
+    Write-Host "`nKAPI YESIL — butun adimlar gecti.`n" -ForegroundColor Green
+    exit 0
 }

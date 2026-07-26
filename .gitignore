@@ -12,6 +12,7 @@ cover
 benchmark_results.json
 results.json
 *.exe
+benchmark.exe
 test.md
 bench_md_test.json
 results_multi.json

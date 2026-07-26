@@ -38,8 +38,17 @@ shared contract, but the primary concurrency hazard there is lower than in
 `Producer`/`Consumer`. Consolidating `GroupConsumer` onto a single shared
 connection (and then benefiting from `reqMu`) is also future work.
 
-### LEO Monotoniklik ve acks=all Yarisi (2026-07-26)
-- internal/replication/isr.go: UpdateLEO artık monotonik; yeni LEO eskisinden kucukse guncelleme yapilmaz.
-- internal/broker/partition.go: SetHighWatermark monotonic.
-- internal/broker/broker.go: handleProduce sonunda purgatory.CheckAndComplete cagrilir.
-- Etki: acks=all @ 16 producer: 300 msg/s → 81153 msg/s. Test: replication_test.go eszamanli monotonic LEO.
+### HW monotonikligi ve truncation
+internal/replication/isr.go icindeki calculateHWLocked artik HW'yi yalnizca
+ileri tasiyor. Bu sabit lider altinda dogru Kafka semantigi, ancak Log.Truncate
+replikasyon yolunda calistiginda HW eski yuksek degerinde takili kalir ve asagi
+inemez. Statik lider atamasiyla su an tetiklenmiyor; leader epoch veya dinamik
+failover eklendiginde ilk kirilacak yer burasidir. Cozum yonu: truncation sirasinda
+ISRTracker'in HW'sini de yeni log ucuna gore sifirlamak.
+
+### Asenkron Send API'si
+Batcher dogru calisiyor ancak Send bloklayici oldugu icin linger yapisal olarak
+kazanamiyor (bkz. BENCHMARK.md Analiz - Batching). Sonraki adim: SendAsync(ctx, ...)
+<-chan Result veya callback tabanli bir arayuz; reqMu yerine correlation ID →
+bekleyen istek eslemesiyle pipelining. Bu ikisi birlikte hem batching'i hem baglanti
+basina throughput'u acar.

@@ -86,6 +86,32 @@ dusuk gecikme + yuksek throughput saglar; LingerMs=5 ise gecikmeyi ~5ms'e cikari
 throughput'u ~325-5133 msg/s seviyesine indirir (M arttikca batch_fill yukselip throughput
 da artar).
 
+Send cagrisi bloklayici oldugundan, batch'i doldurabilecek eszamanlilik
+tam da batch'in dolmasini beklerken bloklanmis olan eszamanliliktir. Bu
+gozlemden iki matematiksel tavan cikar:
+
+- fill_max = senders / batch_kapasitesi
+- throughput_max = senders / LingerMs
+
+Olcumle dogrulama (producers=16 satiri: batching_senders=32, LingerMs=5,
+throughput=5132.76 msg/s, batch_fill=0.5189):
+
+- Tavan throughput = 32 / 0.005 s = 6400 msg/s; olculen 5132.76 msg/s
+  (tavanin ~%80'i — kalan pay bloklanma ve is yuku).
+- Batch kapasitesi = 64 KB / ~1050 B = ~62 kayit; beklenen doluluk =
+  32 / 62 = 0.516; olculen 0.5189 (tahminle tutarli).
+
+Sonuc: bloklayici bir producer API'sinde linger matematiksel olarak
+kazanamaz; throughput, batch'i dolduran eszamanli gonderici sayisinin
+LingerMs'e bolumu ile sinirlidir ve bu tavan ancak eszamanlilik arttikca
+yaklasilir. Gercek Kafka producer'larinda batching'in ise yaramasi
+API'nin asenkron (callback'li) olmasindandir; batch mekanizmasinin kendisi
+degil. Asenkron API'de ayni gonderici bloklanmadan yeni kayitlari batch'e
+eklemeye devam edebilir, dolayisiyla tek bir producer bile batch'i
+doldurabilir. Bloklayici API'de ise her Send cagrisi bitene kadar o
+goroutine yeni kayit ekleyemez, bu yuzden doluluk eszamanli gonderici
+sayisiyla sinirlidir.
+
 ### Consumer
 "Group Consumer Poll" senaryosu 84 veri-donen poll ile 3498.84 msg/s, 3.42 MB/s
 olculmustur. p50=1006.800us (~1.01ms), p99=4147.300us (~4.15ms), max=4147.300us.
