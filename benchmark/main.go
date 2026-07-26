@@ -263,17 +263,26 @@ func renderMarkdown(report Report) string {
 	}
 
 	hasFill := false
+	hasSenders := false
 	for _, r := range report.Results {
 		if r.BatchFillRatio != nil {
 			hasFill = true
-			break
+		}
+		if r.BatchingSenders != nil {
+			hasSenders = true
 		}
 	}
 
 	b.WriteString("\n")
 	b.WriteString("## Sonuçlar\n")
-	if hasFill {
-		b.WriteString("| Senaryo | Producers | Throughput (msg/s) | p50 | p95 | p99 | max | batch_fill_ratio |\n")
+	// Column order: Senaryo | Producers | [batching_senders] | Throughput | p50 | p95 | p99 | max | [batch_fill]
+	// batching_senders and batch_fill are only emitted when at least one row
+	// carries the corresponding value (i.e. the batching scenario ran).
+	if hasFill && hasSenders {
+		b.WriteString("| Senaryo | Producers | batching_senders | Throughput (msg/s) | p50 | p95 | p99 | max | batch_fill |\n")
+		b.WriteString("|---|---|---|---|---|---|---|---|---|\n")
+	} else if hasFill {
+		b.WriteString("| Senaryo | Producers | Throughput (msg/s) | p50 | p95 | p99 | max | batch_fill |\n")
 		b.WriteString("|---|---|---|---|---|---|---|---|\n")
 	} else {
 		b.WriteString("| Senaryo | Producers | Throughput (msg/s) | p50 | p95 | p99 | max |\n")
@@ -288,11 +297,27 @@ func renderMarkdown(report Report) string {
 		}
 		// Print raw measured latencies (µs). Values < 1 µs stay as 0 or 0.xx —
 		// never rewrite them to "<1".
-		if hasFill {
-			fill := ""
-			if r.BatchFillRatio != nil {
-				fill = fmt.Sprintf("%.4f", *r.BatchFillRatio)
-			}
+		senders := ""
+		if r.BatchingSenders != nil {
+			senders = fmt.Sprintf("%d", *r.BatchingSenders)
+		}
+		fill := ""
+		if r.BatchFillRatio != nil {
+			fill = fmt.Sprintf("%.4f", *r.BatchFillRatio)
+		}
+		if hasFill && hasSenders {
+			fmt.Fprintf(&b, "| %s | %d | %s | %.2f | %s | %s | %s | %s | %s |\n",
+				r.Scenario,
+				r.Producers,
+				senders,
+				r.MsgPerSec,
+				p50Str,
+				formatLatency(r.P95LatencyUs),
+				formatLatency(r.P99LatencyUs),
+				formatLatency(r.MaxLatencyUs),
+				fill,
+			)
+		} else if hasFill {
 			fmt.Fprintf(&b, "| %s | %d | %.2f | %s | %s | %s | %s | %s |\n",
 				r.Scenario,
 				r.Producers,

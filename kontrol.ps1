@@ -150,23 +150,30 @@ if (Var "golangci-lint") {
 # ============================================================================
 
 # 5. Dokuman kontrolu
-# BENCHMARK.md'de elle yazilmis sayi var mi kontrol et
 Write-Host "== 5. Dokuman kontrolu =="
-# BENCHMARK.md icinde -md-out ile uretilmemis sayi kalibi ara
 $docErrors = 0
-# kontrol: BENCHMARK.md var mi
 if (-not (Test-Path "docs/BENCHMARK.md")) {
     Write-Host "  HATA: docs/BENCHMARK.md bulunamadi"
     $docErrors++
 } else {
-    Write-Host "  BENCHMARK.md mevcut"
+    $content = Get-Content "docs/BENCHMARK.md" -Raw
+    # Cift baslik kontrolu
+    $ortamCount = ([regex]::Matches($content, "^## Ortam$")).Count
+    $sonucCount = ([regex]::Matches($content, "^## Sonu..lar$")).Count
+    if ($ortamCount -gt 1) { Write-Host "  HATA: $ortamCount adet '## Ortam' basligi (1 olmali)"; $docErrors++ }
+    if ($sonucCount -gt 1) { Write-Host "  HATA: $sonucCount adet '## Sonuc' basligi (1 olmali)"; $docErrors++ }
+    # Elle yazilmis sayi suphesi (tablo disinda rakam kalibi)
+    $manualNumbers = Select-String -Path "docs/BENCHMARK.md" -Pattern "\d+\.\d+\s*(msg/s|ms|us)" | Where-Object { $_.Line -notmatch "^\\|" -and $_.LineNumber -gt 0 }
+    # Temel bolum kontrolu
+    foreach ($section in @("Ortam", "Metodoloji", "Sonuçlar", "Analiz", "Olculmeyenler")) {
+        if ($content -notmatch "## $section") {
+            Write-Host "  HATA: '$section' bolumu eksik"
+            $docErrors++
+        }
+    }
+    if ($docErrors -eq 0) { Write-Host "  OK ($ortamCount Ortam, $sonucCount Sonuc)" }
 }
-if ($docErrors -gt 0) {
-    Write-Host "  Dokuman hatalari: $docErrors" -ForegroundColor Red
-    $HATA++
-} else {
-    Write-Host "  OK"
-}
+if ($docErrors -gt 0) { Write-Host "  Dokuman hatalari: $docErrors" -ForegroundColor Red; $HATA++ }
 
 # ============================================================================
 Write-Host
