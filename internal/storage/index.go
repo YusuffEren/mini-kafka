@@ -267,7 +267,9 @@ func (i *Index) Truncate() error {
 }
 
 // Close unmaps the index, shrinks the backing file to the logical size in use,
-// and closes it. Close is idempotent: calling it more than once (including
+// and closes it. Close also truncates the backing file to the logical size so
+// that reopening reports the correct number of entries instead of the
+// preallocated size. Close is idempotent: calling it more than once (including
 // after Truncate) is a no-op and returns nil.
 func (i *Index) Close() error {
 	i.mu.Lock()

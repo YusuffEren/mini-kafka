@@ -85,6 +85,9 @@ func NewMux(opts ...Logger) *Mux {
 
 // Handle registers a handler for the given API key. If a handler is already
 // registered for apiKey, it is replaced.
+//
+// Handle is not safe for concurrent use and must only be called during setup,
+// before Dispatch.
 func (m *Mux) Handle(apiKey int16, h HandlerFunc) {
 	m.handlers[apiKey] = h
 }

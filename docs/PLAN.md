@@ -38,12 +38,12 @@ Kaynak: mini-kafka-AGENT_PLAN.md — kod incelemesi sonucu tespit edilen eksikle
 - [x] T-42 docs/BENCHMARK.md'yi yeniden yaz
 
 ## W5 — Temizlik (paralel)
-- [ ] T-50 segment.go olu kod
+- [x] T-50 segment.go olu kod
 - [x] T-51 log.go hata ismi
-- [ ] T-52 runFlush zaman takibi
-- [ ] T-53 index.go Truncate/Close
-- [ ] T-54 handler.go map guvenligi doc
+- [x] T-52 runFlush zaman takibi
+- [x] T-53 index.go Truncate/Close
+- [x] T-54 handler.go map guvenligi doc
 - [x] T-55 server.go maxConns yarisi
 - [x] T-56 .gitignore *.log deseni
-- [ ] T-57 docs/ temizligi
+- [x] T-57 docs/ temizligi
 - [x] T-58 docs/FINDINGS.md

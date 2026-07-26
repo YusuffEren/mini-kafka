@@ -53,6 +53,12 @@ type Log struct {
 	// the last automatic flush. It drives FlushMessages.
 	messagesSinceFlush int64
 
+	// lastFlush is the wall-clock time of the most recent automatic flush
+	// performed by runFlush. It gates the time-based flusher so that a
+	// ticker tick that lands slightly before FlushMs has actually elapsed
+	// does not trigger a redundant fsync.
+	lastFlush time.Time
+
 	mu     sync.RWMutex
 	closed bool
 
@@ -86,9 +92,10 @@ func NewLog(dir string, cfg Config) (*Log, error) {
 	}
 
 	l := &Log{
-		dir:    dir,
-		config: cfg,
-		done:   make(chan struct{}),
+		dir:       dir,
+		config:    cfg,
+		done:      make(chan struct{}),
+		lastFlush: time.Now(),
 	}
 
 	if len(baseOffsets) == 0 {
@@ -616,7 +623,10 @@ func (l *Log) runRetention() {
 }
 
 // runFlush fsyncs the active segment when FlushMs has elapsed since the last
-// automatic flush. It is best-effort.
+// automatic flush. The retention loop ticker may fire on an interval that is
+// shorter than (or not an exact multiple of) FlushMs, so each tick re-checks
+// time.Since(lastFlush) and skips the fsync when the interval has not yet
+// elapsed. It is best-effort.
 func (l *Log) runFlush() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -627,8 +637,12 @@ func (l *Log) runFlush() {
 	if l.config.FlushMs <= 0 {
 		return
 	}
+	if time.Since(l.lastFlush) < time.Duration(l.config.FlushMs)*time.Millisecond {
+		return
+	}
 	_ = l.active.Flush()
 	l.messagesSinceFlush = 0
+	l.lastFlush = time.Now()
 }
 
 // totalSizeLocked returns the sum of the logical sizes of all segments. The
