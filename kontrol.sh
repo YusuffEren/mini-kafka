@@ -103,15 +103,15 @@ baslik "5. Dokuman kontrolu"
 
 docErr=0
 for f in $(git ls-files '*.md'); do
-  file "$f" | grep -q "UTF-16" && { echo "  HATA: $f UTF-16"; docErr=$((docErr+1)); }
-  LC_ALL=C grep -q $'\x00' "$f" && { echo "  HATA: $f NUL byte iceriyor"; docErr=$((docErr+1)); }
+  case "$(file -b --mime-encoding "$f" 2>/dev/null)" in utf-16*|binary) echo "  HATA: $f UTF-16/binary"; docErr=$((docErr+1));; esac
+  if perl -0777 -ne 'exit(/\x00/?1:0)' "$f" 2>/dev/null; then :; else echo "  HATA: $f NUL byte iceriyor"; docErr=$((docErr+1)); fi
 done
 for s in Ortam Metodoloji "Sonuçlar" Analiz Olculmeyenler; do
   n=$(grep -c "^## $s\$" docs/BENCHMARK.md)
   [ "$n" -eq 1 ] || { echo "  HATA: '## $s' sayisi $n (1 olmali)"; docErr=$((docErr+1)); }
 done
 head -c 1 docs/BENCHMARK.md | grep -q '#' || { echo "  HATA: BENCHMARK.md '#' ile baslamiyor"; docErr=$((docErr+1)); }
-[ "$docErr" -eq 0 ] && yesil "OK" || HATA=1
+[ "$docErr" -eq 0 ] && yesil "OK" || HATA=$((HATA+1))
 
 # ============================================================================
 echo
