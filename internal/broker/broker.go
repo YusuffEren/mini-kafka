@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
@@ -106,7 +107,7 @@ func New(cfg *config.Config) (*Broker, error) {
 		b.initTopicReplication(meta.Name, meta.NumPartitions)
 	}
 
-	mux := server.NewMux()
+	mux := server.NewMux(slog.Default())
 	mux.Handle(apiKeyApiVersions, handleApiVersions)
 	mux.Handle(apiKeyProduce, b.handleProduce)
 	mux.Handle(apiKeyFetch, b.handleFetch)
@@ -123,7 +124,13 @@ func New(cfg *config.Config) (*Broker, error) {
 	b.mux = mux
 
 	addr := fmt.Sprintf("%s:%d", cfg.Broker.Host, cfg.Broker.Port)
-	srv := server.NewServer(addr, mux, cfg.Broker.MaxConnections)
+	srv := server.NewServer(server.ServerConfig{
+		Addr:            addr,
+		MaxConnections:  cfg.Broker.MaxConnections,
+		IdleTimeout:     time.Duration(cfg.Broker.RequestTimeoutMs) * time.Millisecond,
+		WriteTimeout:    10 * time.Second,
+		MaxRequestBytes: server.DefaultMaxRequestBytes,
+	}, mux)
 	b.server = srv
 
 	return b, nil
@@ -235,8 +242,15 @@ func (b *Broker) getOrCreateTopic(name string, requestedPartitions int32) (*Topi
 	return t, nil
 }
 
-func (b *Broker) registerListener(topic string, partitionID int32) chan struct{} {
-	ch := make(chan struct{}, 10)
+// registerListenerOn registers the caller-provided notify channel ch as a
+// long-poll listener for the given topic-partition. The caller owns ch and
+// may register the SAME channel on multiple partitions so that a produce to
+// any one of them wakes a single waiting fetch (T-23).
+//
+// The channel MUST be buffered (cap >= 1): notifyAppended performs a
+// non-blocking send, so an unbuffered channel would never receive the
+// signal if the consumer is not currently blocked in the select.
+func (b *Broker) registerListenerOn(topic string, partitionID int32, ch chan struct{}) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -244,21 +258,97 @@ func (b *Broker) registerListener(topic string, partitionID int32) chan struct{}
 		b.listeners[topic] = make(map[int32][]chan struct{})
 	}
 	b.listeners[topic][partitionID] = append(b.listeners[topic][partitionID], ch)
-	return ch
 }
 
+// notifyAppended wakes every long-poll listener registered for the given
+// topic-partition by performing a non-blocking send on its channel.
+//
+// A non-blocking send is used so a slow or absent consumer never blocks the
+// produce hot path: if the channel already holds a pending signal (cap 1)
+// the send is dropped, which is correct because a single pending signal is
+// enough to wake the consumer, who then re-checks the log end offset.
+//
+// Unlike a close-based signal, the channel is left registered; the consumer
+// is responsible for unregistering it on every exit path. This also removes
+// any double-close risk.
 func (b *Broker) notifyAppended(topic string, partitionID int32) {
 	b.mu.Lock()
 	var list []chan struct{}
 	if pMap, ok := b.listeners[topic]; ok {
 		list = pMap[partitionID]
-		delete(pMap, partitionID)
 	}
 	b.mu.Unlock()
 
 	for _, ch := range list {
-		close(ch)
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
 	}
+}
+
+// unregisterListener removes a previously registered long-poll listener
+// channel from the listeners map. It is called on every exit path of the
+// long-poll loop in handleFetch (timeout, notification, or early data
+// availability) so that channels do not accumulate in the map.
+//
+// The channel is intentionally NOT closed here: notifyAppended uses a
+// non-blocking send (never a close), so closing here would risk a panic on
+// a subsequent send once notifyAppended runs.
+//
+// If the channel is not present (e.g. already removed), unregisterListener
+// returns silently.
+func (b *Broker) unregisterListener(topic string, partitionID int32, ch chan struct{}) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	pMap, ok := b.listeners[topic]
+	if !ok {
+		return
+	}
+	list := pMap[partitionID]
+	for i, c := range list {
+		if c == ch {
+			n := len(list)
+			list[i] = list[n-1]
+			list[n-1] = nil // help GC reclaim the reference
+			list = list[:n-1]
+			if len(list) == 0 {
+				delete(pMap, partitionID)
+				if len(pMap) == 0 {
+					delete(b.listeners, topic)
+				}
+			} else {
+				pMap[partitionID] = list
+			}
+			return
+		}
+	}
+	// ch not found: nothing to do (already removed by notifyAppended).
+}
+
+// fetchTarget describes a single topic-partition a fetch request wants to
+// long-poll on, together with the offset beyond which new data is expected.
+type fetchTarget struct {
+	topic        string
+	partitionID  int32
+	targetOffset int64
+}
+
+// fetchTargetHasNewData reports whether the partition has appended records
+// beyond targetOffset (i.e. its log end offset advanced past the consumer's
+// fetch offset). A non-existent topic or partition reports false so the
+// long-poll loop simply keeps waiting (or times out) instead of spinning.
+func (b *Broker) fetchTargetHasNewData(t fetchTarget) bool {
+	tObj := b.getTopic(t.topic)
+	if tObj == nil {
+		return false
+	}
+	pObj := tObj.GetPartition(t.partitionID)
+	if pObj == nil {
+		return false
+	}
+	return pObj.LogEndOffset() > t.targetOffset
 }
 
 // handleApiVersions handles ApiVersions requests.
@@ -295,9 +385,32 @@ func (b *Broker) handleProduce(req *protocol.RequestFrame) (*protocol.ResponseFr
 		return &protocol.ResponseFrame{ErrorCode: server.ErrUnknown}, nil
 	}
 
+	// Shared deadline for the whole produce request. TimeoutMs is a single
+	// budget shared across every partition, matching Kafka's semantics: it
+	// is NOT a per-partition budget that restarts on each iteration. A
+	// non-positive timeout falls back to a sane default so callers that
+	// omit it still get bounded behaviour.
+	deadline := time.Now().Add(time.Duration(produceReq.TimeoutMs) * time.Millisecond)
+	if produceReq.TimeoutMs <= 0 {
+		deadline = time.Now().Add(30 * time.Second)
+	}
+
 	produceResp := &protocol.ProduceResponse{
 		Topics: make([]protocol.ProduceResponseTopic, len(produceReq.Topics)),
 	}
+
+	// pendingAck captures a partition that successfully appended and now
+	// needs acks=all replication confirmation. The confirmation waits are
+	// issued in parallel after the append loop so they all share the same
+	// deadline instead of serially burning the timeout budget.
+	type pendingAck struct {
+		topicIdx   int
+		partIdx    int
+		topic      string
+		partition  int32
+		requiredHW int64
+	}
+	var pending []pendingAck
 
 	for i, tReq := range produceReq.Topics {
 		topicResp := protocol.ProduceResponseTopic{
@@ -382,21 +495,53 @@ func (b *Broker) handleProduce(req *protocol.RequestFrame) (*protocol.ResponseFr
 					partResp.LogAppendTime = time.Now().UnixMilli()
 					b.notifyAppended(tReq.Name, pReq.PartitionID)
 
-					// acks=all: wait in purgatory until HW reaches the new LEO.
+					// acks=all: defer the purgatory wait so every partition
+					// waits against the shared deadline in parallel rather
+					// than serially consuming TimeoutMs per partition.
 					if produceReq.Acks == -1 {
-						if waitErr := b.waitForAcksAll(tReq.Name, pReq.PartitionID, leaderLEO, produceReq.TimeoutMs); waitErr != nil {
-							if errors.Is(waitErr, errProduceTimeout) {
-								partResp.ErrorCode = server.ErrRequestTimedOut
-							} else {
-								partResp.ErrorCode = server.ErrNotEnoughReplicas
-							}
-						}
+						pending = append(pending, pendingAck{
+							topicIdx:   i,
+							partIdx:    j,
+							topic:      tReq.Name,
+							partition:  pReq.PartitionID,
+							requiredHW: leaderLEO,
+						})
 					}
 				}
 			}
 			topicResp.Partitions[j] = partResp
 		}
 		produceResp.Topics[i] = topicResp
+	}
+
+	// Phase 2: wait for every pending acks=all partition concurrently against
+	// the single shared deadline. This is the key difference from a naive
+	// serial implementation: N partitions that each need the full timeout to
+	// give up cost ~TimeoutMs total, not ~N*TimeoutMs.
+	if len(pending) > 0 {
+		waitErrs := make([]error, len(pending))
+		var wg sync.WaitGroup
+		for idx, pa := range pending {
+			wg.Add(1)
+			go func(idx int, pa pendingAck) {
+				defer wg.Done()
+				waitErrs[idx] = b.waitForAcksAll(pa.topic, pa.partition, pa.requiredHW, deadline)
+			}(idx, pa)
+		}
+		wg.Wait()
+
+		for idx, pa := range pending {
+			waitErr := waitErrs[idx]
+			if waitErr == nil {
+				continue
+			}
+			partResp := &produceResp.Topics[pa.topicIdx].Partitions[pa.partIdx]
+			if errors.Is(waitErr, errProduceTimeout) {
+				partResp.ErrorCode = server.ErrRequestTimedOut
+			} else {
+				partResp.ErrorCode = server.ErrNotEnoughReplicas
+			}
+		}
 	}
 
 	var body bytes.Buffer
@@ -413,37 +558,83 @@ func (b *Broker) handleFetch(req *protocol.RequestFrame) (*protocol.ResponseFram
 		return &protocol.ResponseFrame{ErrorCode: server.ErrUnknown}, nil
 	}
 
-	// Long-polling: wait if first partition fetchOffset >= LEO and maxWaitMs > 0
-	if fetchReq.MaxWaitMs > 0 && len(fetchReq.Topics) > 0 && len(fetchReq.Topics[0].Partitions) > 0 {
-		topicName := fetchReq.Topics[0].Name
-		partID := fetchReq.Topics[0].Partitions[0].PartitionID
-		targetOffset := fetchReq.Topics[0].Partitions[0].FetchOffset
-		deadline := time.Now().Add(time.Duration(fetchReq.MaxWaitMs) * time.Millisecond)
+	// Long-polling: wait if any requested partition's FetchOffset is at or
+	// beyond its current log end offset and MaxWaitMs > 0. A single shared
+	// notify channel is registered on EVERY requested topic-partition so that
+	// a produce to any one of them wakes the fetch (T-23: previously only
+	// Topics[0].Partitions[0] was watched, so data appended to other
+	// partitions would not wake a multi-partition fetch).
+	if fetchReq.MaxWaitMs > 0 && len(fetchReq.Topics) > 0 {
+		var targets []fetchTarget
+		for _, tReq := range fetchReq.Topics {
+			for _, pReq := range tReq.Partitions {
+				targets = append(targets, fetchTarget{
+					topic:        tReq.Name,
+					partitionID:  pReq.PartitionID,
+					targetOffset: pReq.FetchOffset,
+				})
+			}
+		}
 
-		for {
-			tObj := b.getTopic(topicName)
-			if tObj != nil {
-				pObj := tObj.GetPartition(partID)
-				if pObj != nil && pObj.LogEndOffset() > targetOffset {
-					break
+		if len(targets) > 0 {
+			deadline := time.Now().Add(time.Duration(fetchReq.MaxWaitMs) * time.Millisecond)
+
+			// Register the shared notify channel on every requested
+			// partition BEFORE the first data check so that a produce
+			// racing with the check still buffers a signal we will receive.
+			notifyCh := make(chan struct{}, 1)
+			for _, tgt := range targets {
+				b.registerListenerOn(tgt.topic, tgt.partitionID, notifyCh)
+			}
+			// unregisterOnExit removes the shared channel from every
+			// partition it was registered on. It runs on all exit paths
+			// (data available, deadline, or early break) so channels never
+			// accumulate in the map.
+			unregisterOnExit := func() {
+				for _, tgt := range targets {
+					b.unregisterListener(tgt.topic, tgt.partitionID, notifyCh)
 				}
 			}
 
-			now := time.Now()
-			if !now.Before(deadline) {
-				break
-			}
-			ch := b.registerListener(topicName, partID)
-			tObj = b.getTopic(topicName)
-			if tObj != nil {
-				pObj := tObj.GetPartition(partID)
-				if pObj != nil && pObj.LogEndOffset() > targetOffset {
+			for {
+				anyData := false
+				for _, tgt := range targets {
+					if b.fetchTargetHasNewData(tgt) {
+						anyData = true
+						break
+					}
+				}
+				if anyData {
+					unregisterOnExit()
 					break
 				}
-			}
-			select {
-			case <-ch:
-			case <-time.After(deadline.Sub(now)):
+
+				now := time.Now()
+				if !now.Before(deadline) {
+					unregisterOnExit()
+					break
+				}
+				// Use a stoppable timer instead of time.After so the timer
+				// is not left running until it fires when the channel wins
+				// the select. This avoids leaking timers across long-poll
+				// loops.
+				timer := time.NewTimer(deadline.Sub(now))
+				select {
+				case <-notifyCh:
+				case <-timer.C:
+				}
+				if !timer.Stop() {
+					// Drain the timer channel if it fired concurrently with
+					// the <-notifyCh case so no buffered value is left
+					// behind.
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				// Loop back to re-check data. The shared channel stays
+				// registered across iterations; it is only removed by
+				// unregisterOnExit on a real exit path.
 			}
 		}
 	}

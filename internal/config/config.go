@@ -10,6 +10,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -44,6 +45,10 @@ type BrokerConfig struct {
 	// RequestTimeoutMs is the default server-side timeout, in milliseconds,
 	// applied to requests that do not carry their own timeout.
 	RequestTimeoutMs int `yaml:"request_timeout_ms"`
+	// LogLevel controls the verbosity of the structured logger (slog) used by
+	// the broker. Accepted values are "debug", "info", "warn" and "error";
+	// any other value falls back to "info".
+	LogLevel string `yaml:"log_level"`
 }
 
 // LogConfig holds the log segment and retention policy shared by all
@@ -161,12 +166,79 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg.WithDefaults()
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("config: validate %q: %w", path, err)
+	}
 	return &cfg, nil
+}
+
+// Validate checks c for values that would cause silent corruption or undefined
+// behaviour at runtime. It returns an error describing the first invalid
+// field, or nil if the configuration is sound.
+//
+// Validate is called by Load after WithDefaults has populated any zero-valued
+// fields, so it always sees a fully-populated Config. It may also be called
+// directly on a Config that was constructed in code (e.g. in tests).
+func (c *Config) Validate() error {
+	// The on-disk index stores record positions as uint32. A segment larger
+	// than 4 GiB would silently wrap the position field and point reads at the
+	// wrong byte offset. Reject this at config time so the broker never starts
+	// with a segment policy it cannot index correctly.
+	if c.Log.SegmentBytes > math.MaxUint32 {
+		return fmt.Errorf("segment_bytes 4 GiB'ı (%d) aşamaz: index pozisyonları uint32", int64(math.MaxUint32))
+	}
+	// RequestTimeoutMs becomes the server's IdleTimeout. A non-positive value
+	// would disable the idle read deadline, leaving the broker vulnerable to
+	// slowloris-style resource exhaustion. It must also be greater than the
+	// maximum long-poll MaxWaitMs the broker honors (enforced at request time
+	// in the fetch handler) so long-polling fetches are not aborted by the
+	// idle deadline before they complete.
+	if c.Broker.RequestTimeoutMs <= 0 {
+		return fmt.Errorf("broker.request_timeout_ms pozitif olmalı (şu an %d)", c.Broker.RequestTimeoutMs)
+	}
+	return nil
+}
+
+// Index entry sizing constants used to derive the index file size from the
+// segment policy. These mirror internal/storage.entrySize; they are duplicated
+// here to keep the config package free of a storage dependency.
+const (
+	// indexEntrySize is the fixed on-disk size of a single index entry, in
+	// bytes (4 bytes relative offset + 4 bytes position).
+	indexEntrySize int64 = 8
+	// indexMaxBytesMin is the lower clamp for the derived index size.
+	indexMaxBytesMin int64 = 64 * 1024 // 64 KiB
+	// indexMaxBytesMax is the upper clamp for the derived index size.
+	indexMaxBytesMax int64 = 10 * 1024 * 1024 // 10 MiB
+)
+
+// deriveIndexMaxBytes computes a sensible preallocated size for a segment's
+// index file from the segment policy. The number of index entries a full
+// segment can produce is at most SegmentBytes/IndexIntervalBytes + 1; each
+// entry occupies indexEntrySize bytes on disk, and we double the result to
+// leave headroom for sparse writes and future growth. The value is clamped to
+// [indexMaxBytesMin, indexMaxBytesMax] so degenerate inputs do not produce an
+// unusably small or wastefully large index.
+//
+// If interval is non-positive (should not happen after WithDefaults, but
+// guarded for safety) the upper clamp is returned as a conservative default.
+func deriveIndexMaxBytes(segmentBytes, indexIntervalBytes int64) int64 {
+	if indexIntervalBytes <= 0 {
+		return indexMaxBytesMax
+	}
+	needed := (segmentBytes/indexIntervalBytes + 1) * indexEntrySize * 2
+	if needed < indexMaxBytesMin {
+		needed = indexMaxBytesMin
+	}
+	if needed > indexMaxBytesMax {
+		needed = indexMaxBytesMax
+	}
+	return needed
 }
 
 // WithDefaults populates any zero-valued field of c with the package default.
 // It mutates c in place. The defaults mirror the values shipped in
-// config/broker.yaml and the recommended values in MINI_KAFKA_SPEC.md.
+// config/broker.yaml and the recommended values in docs/PROTOCOL.md.
 func (c *Config) WithDefaults() {
 	// Broker
 	if c.Broker.ID == 0 {
@@ -187,6 +259,9 @@ func (c *Config) WithDefaults() {
 	if c.Broker.RequestTimeoutMs == 0 {
 		c.Broker.RequestTimeoutMs = 30000
 	}
+	if c.Broker.LogLevel == "" {
+		c.Broker.LogLevel = "info"
+	}
 
 	// Log
 	if c.Log.SegmentBytes == 0 {
@@ -199,7 +274,7 @@ func (c *Config) WithDefaults() {
 		c.Log.IndexIntervalBytes = 4096
 	}
 	if c.Log.IndexMaxBytes == 0 {
-		c.Log.IndexMaxBytes = 10 * 1024 * 1024 // 10 MiB
+		c.Log.IndexMaxBytes = deriveIndexMaxBytes(c.Log.SegmentBytes, c.Log.IndexIntervalBytes)
 	}
 	if c.Log.RetentionMs == 0 {
 		c.Log.RetentionMs = 7 * 24 * 60 * 60 * 1000 // 7 days

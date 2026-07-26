@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -34,14 +35,22 @@ func DefaultConsumerConfig() ConsumerConfig {
 }
 
 // Consumer manages fetching records from mini-kafka brokers.
+// Consumer is safe for concurrent use by multiple goroutines; requests are
+// serialised over a single connection.
 type Consumer struct {
 	addrs  []string
 	config ConsumerConfig
 
 	mu     sync.Mutex
 	conn   net.Conn
+	br     *bufio.Reader
+	bw     *bufio.Writer
 	closed bool
 	nextID int32
+
+	// reqMu serialises full request/response round-trips over the shared
+	// connection. See Producer.reqMu for rationale.
+	reqMu sync.Mutex
 }
 
 // NewConsumer constructs a Consumer targeting the provided broker addresses.
@@ -78,6 +87,12 @@ func (c *Consumer) getConn() (net.Conn, error) {
 		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 		if err == nil {
 			c.conn = conn
+			// Wrap the fresh connection in buffered reader/writer. The old
+			// bufio wrappers (if any) referenced the previous, now-closed
+			// connection and must never be reused — any buffered bytes they
+			// hold belong to a dead stream. Recreate them on every new conn.
+			c.br = bufio.NewReaderSize(conn, 64*1024)
+			c.bw = bufio.NewWriterSize(conn, 64*1024)
 			return conn, nil
 		}
 		lastErr = err
@@ -91,6 +106,11 @@ func (c *Consumer) closeConn() {
 	if c.conn != nil {
 		_ = c.conn.Close()
 		c.conn = nil
+		// Drop references to the bufio wrappers tied to the closed conn so
+		// that a subsequent getConn recreates them over the new connection
+		// instead of reading stale buffered bytes from the old one.
+		c.br = nil
+		c.bw = nil
 	}
 }
 
@@ -128,20 +148,41 @@ func (c *Consumer) Fetch(ctx context.Context, topic string, partition int32, fet
 		Payload:       payload.Bytes(),
 	}
 
+	// Serialise the full round-trip so concurrent Fetch callers cannot
+	// interleave request frames or read each other's responses.
+	c.reqMu.Lock()
+	defer c.reqMu.Unlock()
+
 	conn, err := c.getConn()
 	if err != nil {
 		return nil, err
 	}
+	_ = conn // br/bw are the buffered views over conn; conn itself is not used directly.
 
-	if _, err := frame.Write(conn); err != nil {
+	if _, err := frame.Write(c.bw); err != nil {
 		c.closeConn()
 		return nil, fmt.Errorf("consumer: write frame: %w", err)
 	}
+	// Flush after every request: bufio.Writer buffers writes locally and will
+	// not push them to the conn until the buffer fills or Flush is called.
+	// Skipping the flush leaves the request stuck in the buffer and the broker
+	// never sees it, deadlocking the round-trip.
+	if err := c.bw.Flush(); err != nil {
+		c.closeConn()
+		return nil, fmt.Errorf("consumer: flush frame: %w", err)
+	}
 
-	respFrame, err := protocol.ReadResponseFrame(conn)
+	respFrame, err := protocol.ReadResponseFrame(c.br)
 	if err != nil {
 		c.closeConn()
 		return nil, fmt.Errorf("consumer: read response: %w", err)
+	}
+
+	if respFrame.CorrelationID != corrID {
+		// The response stream is out of sync with our request stream; the
+		// connection is now unusable for any in-flight or future requests.
+		c.closeConn()
+		return nil, fmt.Errorf("consumer: correlation id mismatch: got %d, want %d", respFrame.CorrelationID, corrID)
 	}
 
 	if respFrame.ErrorCode != 0 {
@@ -191,6 +232,8 @@ func (c *Consumer) Close() error {
 	if c.conn != nil {
 		err := c.conn.Close()
 		c.conn = nil
+		c.br = nil
+		c.bw = nil
 		return err
 	}
 	return nil

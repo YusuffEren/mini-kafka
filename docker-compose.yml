@@ -4,10 +4,18 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: mini-kafka
+    restart: unless-stopped
     ports:
       - "9092:9092"
     volumes:
       - mini-kafka-data:/var/lib/mini-kafka
+      - ./config/broker-single.yaml:/etc/mini-kafka/broker-single.yaml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   mini-kafka-data:

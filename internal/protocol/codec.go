@@ -1,7 +1,7 @@
 // Package protocol implements the wire codec for the mini-kafka binary protocol.
 //
 // This file provides encode (Put*) and decode functions for the primitive wire
-// types defined in MINI_KAFKA_SPEC.md Section 5.2:
+// types defined in docs/PROTOCOL.md Section 2:
 //
 //   - int8 / int16 / int32 / int64: big-endian, fixed size
 //   - string: int16 length + UTF-8 bytes; length -1 means null

@@ -1,56 +1,49 @@
-# PLAN - mini-kafka
+# PLAN - mini-kafka (AGENT_PLAN duzeltmeleri)
 
-## Faz 0: Proje İskeleti
-- [x] P0.1 Go modül başlatma, Makefile, .gitignore, golangci-lint config
-- [x] P0.2 Dizin yapısı (cmd/, internal/, pkg/, test/, benchmark/, config/)
-- [x] P0.3 config/broker.yaml oluşturma
+Kaynak: mini-kafka-AGENT_PLAN.md — kod incelemesi sonucu tespit edilen eksikler.
 
-## Faz 1: Storage Katmanı
-- [x] T1.1 Record encode/decode (`internal/storage/record.go`)
-- [x] T1.2 Index (`internal/storage/index.go`)
-- [x] T1.3 Segment (`internal/storage/segment.go`)
-- [x] T1.4 Log (`internal/storage/log.go`)
-- [x] T1.5 Faz 1 DoD kontrolü (test, coverage, lint, review)
+## W0 — Dogruluk ve Build Butunlugu
+- [x] T-01 README protokol uyumlulugu iddiasini duzelt
+- [x] T-02 Silinmis protokol spec referanslarini onar
+- [x] T-03 Dockerfile Go surumu + non-root
+- [x] T-04 docker compose calisan sistem
+- [x] T-05 LICENSE ekle
 
-## Faz 2: Protokol ve TCP Server
-- [x] T2.1 Codec (`internal/protocol/codec.go`)
-- [x] T2.2 Frame (`internal/protocol/frame.go`)
-- [x] T2.3 Request/Response tipleri
-- [x] T2.4 TCP Server
-- [x] T2.5 Broker iskeleti
-- [x] T2.6 Client (producer, consumer)
-- [x] T2.7 CLI'lar
-- [x] T2.8 Faz 2 DoD kontrolü
+## W1 — Correctness Bug'lari (T-19 ilk, sonra paralel)
+- [x] T-19 Eszamanlilik ve sizinti test altyapisi
+- [x] T-10 Segment.FlushWriter veri yarisi
+- [x] T-11 Long-poll listener bellek sizintisi
+- [x] T-12 Retention broker restart'inda sifirlaniyor
+- [x] T-13 Hard crash sonrasi sealed segment index'leri
+- [x] T-14 4 GiB ustu segment'te sessiz tasma
+- [x] T-15 pkg/client.Producer eszamanli kullanimda bozuluyor
 
-## Faz 3: Topic ve Partition
-- [x] T3.1 Partition (`internal/broker/partition.go`)
-- [x] T3.2 Topic (`internal/broker/topic.go`)
-- [x] T3.3 Metadata + CreateTopic API
-- [x] T3.4 Client metadata cache
-- [x] T3.5 Faz 3 DoD kontrolü
+## W2 — Dayaniklilik ve Hata Gorunurlugu
+- [x] T-20 Istemci baglantilarinda deadline yok
+- [x] T-21 Handler hatalari tek ErrUnknown'a cokuyor
+- [x] T-22 acks=all cok partition'da timeout'lari topluyor
+- [x] T-23 Long-poll yalnizca ilk partition'a bakiyor (T-11'den sonra)
 
-## Faz 4: Consumer Group ve Offset Yönetimi
-- [x] T4.1 Group Coordinator
-- [x] T4.2 Assignor (Range, RoundRobin)
-- [x] T4.3 Offset Store
-- [x] T4.4 Group Consumer Client
-- [x] T4.5 Faz 4 DoD kontrolü
+## W3 — Performans
+- [x] T-30 Sunucu baglantilarinda tamponlama
+- [x] T-31 Istemci baglantilarinda tamponlama (T-15'ten sonra)
+- [x] T-32 Okuma yolu ve recovery tamponsuz
+- [x] T-33 Record.Encode/DecodeRecord tahsis-yogun
+- [x] T-34 Segment.Append'te gereksiz syscall
+- [x] T-35 index_max_bytes gereginin 40 kati
 
-## Faz 5: Replikasyon ve ISR
-- [x] T5.1 Replica State + ISR
-- [x] T5.2 High Watermark
-- [x] T5.3 Follower
-- [x] T5.4 Leader
-- [x] T5.5 Purgatory
-- [x] T5.6 Leader Failover + Leader Epoch
-- [x] T5.7 Faz 5 DoD kontrolü
+## W4 — Gercek Batching ve Benchmark (sirali)
+- [x] T-40 LingerMs batching yapmiyor
+- [x] T-41 Benchmark harness'i anlamli hale getir
+- [x] T-42 docs/BENCHMARK.md'yi yeniden yaz
 
-## Faz 6: Benchmark ve Dokümantasyon
-- [x] T6.1 Benchmark harness
-- [x] T6.2 Latency histogram
-- [x] T6.3 Kafka docker-compose
-- [x] T6.4 Sonuç görselleştirme
-- [x] T6.5 docs/BENCHMARK.md
-- [x] T6.6 README
-- [x] T6.7 Son güvenlik taraması
-- [x] T6.8 Son commit
+## W5 — Temizlik (paralel)
+- [ ] T-50 segment.go olu kod
+- [x] T-51 log.go hata ismi
+- [ ] T-52 runFlush zaman takibi
+- [ ] T-53 index.go Truncate/Close
+- [ ] T-54 handler.go map guvenligi doc
+- [x] T-55 server.go maxConns yarisi
+- [x] T-56 .gitignore *.log deseni
+- [ ] T-57 docs/ temizligi
+- [x] T-58 docs/FINDINGS.md

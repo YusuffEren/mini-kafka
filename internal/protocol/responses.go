@@ -1,7 +1,7 @@
 // Package protocol implements the wire codec for the mini-kafka binary protocol.
 //
 // This file defines the response body types for the APIs implemented in Faz 2
-// (MINI_KAFKA_SPEC.md Section 5.5): Produce (apiKey 0), Fetch (apiKey 1) and
+// (docs/PROTOCOL.md Section 4): Produce (apiKey 0), Fetch (apiKey 1) and
 // ApiVersions (apiKey 12). Each type provides Encode and Decode methods that
 // use the primitive codec functions defined in codec.go. All multi-byte
 // integers are big-endian.

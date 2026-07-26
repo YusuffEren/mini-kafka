@@ -1,0 +1,59 @@
+services:
+  broker1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mini-kafka-broker1
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+    volumes:
+      - broker1-data:/var/lib/mini-kafka
+      - ./config/broker1.yaml:/etc/mini-kafka/broker-single.yaml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  broker2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mini-kafka-broker2
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - broker2-data:/var/lib/mini-kafka
+      - ./config/broker2.yaml:/etc/mini-kafka/broker-single.yaml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9093 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  broker3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mini-kafka-broker3
+    restart: unless-stopped
+    ports:
+      - "9094:9094"
+    volumes:
+      - broker3-data:/var/lib/mini-kafka
+      - ./config/broker3.yaml:/etc/mini-kafka/broker-single.yaml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9094 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  broker1-data:
+  broker2-data:
+  broker3-data:

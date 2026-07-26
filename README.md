@@ -1,6 +1,6 @@
 # mini-kafka
 
-Go ile yazılmış, Kafka binary protokolüyle uyumlu bir mesaj kuyruğu. Harici bağımlılığı yok denecek kadar az (`golang.org/x/sys` ve `yaml.v3` hariç), tek binary ile çalışıyor.
+Go ile yazılmış, Apache Kafka'nın mimarisinden (segment'li log, sparse index, consumer group, ISR replikasyonu) esinlenen bir mesaj kuyruğu. **Kendi binary protokolünü** kullanır — Kafka wire protokolüyle uyumlu *değildir*, resmi Kafka istemcileri bağlanamaz. Protokol `docs/PROTOCOL.md` içinde tanımlıdır. Harici bağımlılığı yok denecek kadar az (`golang.org/x/sys` ve `yaml.v3` hariç), tek binary ile çalışıyor.
 
 ## Gereksinimler
 
@@ -56,15 +56,31 @@ msgs, _ := gc.Poll(ctx, 1*time.Second)
 
 ## Docker
 
+Tek broker (varsayılan, `docker-compose.yml`):
+
 ```bash
 docker compose up -d
 ```
 
-Tek broker, `9092` portunda ayağa kalkar.
+Tek broker, `9092` portunda ayağa kalkar. `config/broker-single.yaml` kullanır;
+tüm partition'ların lideri bu broker olduğu için `NotLeaderForPartition` hatası
+dönmez.
 
-## Desteklenen Kafka API'leri
+3 broker'lık cluster (`docker-compose.cluster.yml`):
+
+```bash
+docker compose -f docker-compose.cluster.yml up -d
+```
+
+Broker'lar `9092`, `9093` ve `9094` portlarında ayağa kalkar. Her biri kendi
+config dosyasını (`config/broker1.yaml`, `broker2.yaml`, `broker3.yaml`)
+kullanır ve `config/broker.yaml`'daki cluster tanımına göre birbirini bulur.
+
+## Desteklenen API'ler
 
 Produce (0), Fetch (1), Metadata (2), CreateTopics (3), JoinGroup (4), SyncGroup (5), Heartbeat (6), LeaveGroup (7), OffsetCommit (8), OffsetFetch (9), ListOffsets (10), ReplicaFetch (11).
+
+*API isimleri Kafka'daki karşılıklarından esinlenmiştir; key numaraları ve payload düzenleri Kafka ile aynı değildir.
 
 Topic başına birden fazla partition, key-based Murmur2 routing, consumer group rebalance (Range ve RoundRobin), ISR tabanlı replikasyon ve leader epoch desteği var. Offset'ler `__consumer_offsets` dizini altında storage log partition'larına yazılıyor.
 
@@ -95,3 +111,7 @@ Daha detaylı yazılar `docs/` altında:
 - [Binary protokol](docs/PROTOCOL.md) — codec, frame, request/response formatları
 - [Benchmark sonuçları](docs/BENCHMARK.md)
 - Faz 1-6: `docs/PHASE_1.md` ... `docs/PHASE_6.md`
+
+## Lisans
+
+Bu proje [MIT lisansı](LICENSE) altında dağıtılmaktadır.

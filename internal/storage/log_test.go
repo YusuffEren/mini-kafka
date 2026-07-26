@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -17,6 +18,15 @@ func newTestLog(t *testing.T, cfg Config) *Log {
 		t.Fatalf("NewLog failed: %v", err)
 	}
 	return l
+}
+
+// fileSize returns the on-disk size of path.
+func fileSize(path string) (int64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
 }
 
 // testRecord returns a Record with predictable payload for the given offset.
@@ -423,6 +433,107 @@ func TestLogReadFromMaxBytesZero(t *testing.T) {
 	}
 	if len(recs) != 0 {
 		t.Errorf("ReadFrom(0, 0) returned %d records, want 0", len(recs))
+	}
+}
+
+// TestRotationSealsIndex checks that when a segment is rotated its index file
+// is shrunk to the number of written entries. The current code leaves it at
+// the 10 MiB preallocated size because rotateLocked does not close the index.
+func TestRotationSealsIndex(t *testing.T) {
+	cfg := Config{
+		SegmentBytes:       100,
+		IndexMaxBytes:      1024,
+		IndexIntervalBytes: 1, // index every record so entry count is deterministic
+		RetentionBytes:     -1,
+	}
+	l := newTestLog(t, cfg)
+
+	// Append until at least one rotation happens.
+	for i := 0; l.NumSegments() < 2; i++ {
+		if _, err := l.Append(testRecord(i)); err != nil {
+			t.Fatalf("Append #%d failed: %v", i, err)
+		}
+		if i > 1000 {
+			t.Fatalf("rotation did not happen after %d appends", i)
+		}
+	}
+
+	sealed := l.segments[0]
+	wantSize := int64(sealed.index.Entries()) * entrySize
+	gotSize, err := fileSize(sealed.index.file.Name())
+	if err != nil {
+		t.Fatalf("stat sealed index failed: %v", err)
+	}
+	if gotSize != wantSize {
+		t.Errorf("sealed .index size = %d, want %d (entries=%d)", gotSize, wantSize, sealed.index.Entries())
+	}
+
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+}
+
+// TestRetentionSurvivesRestart verifies that time-based retention still deletes
+// old sealed segments after the log is closed and reopened. Because NewSegment
+// currently resets CreatedAt to time.Now(), sealed segments reopen as if they
+// were just created and are never eligible for deletion. This test should fail
+// until that bug is fixed.
+func TestRetentionSurvivesRestart(t *testing.T) {
+	cfg := Config{
+		SegmentBytes: 100,
+		RetentionMs:  100,
+		FlushMs:      0, // disable background flush interference
+	}
+	l := newTestLog(t, cfg)
+
+	// Append enough records to force at least three segments.
+	for i := 0; i < 30; i++ {
+		if _, err := l.Append(testRecord(i)); err != nil {
+			t.Fatalf("Append #%d failed: %v", i, err)
+		}
+	}
+	if l.NumSegments() < 3 {
+		t.Fatalf("expected at least 3 segments before close, got %d", l.NumSegments())
+	}
+
+	dir := l.dir
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// Age every segment file on disk by moving its mtime one hour into the past.
+	oldMtime := time.Now().Add(-time.Hour)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(%q) failed: %v", dir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".log") && !strings.HasSuffix(name, ".index") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if err := os.Chtimes(path, oldMtime, oldMtime); err != nil {
+			t.Fatalf("Chtimes(%q) failed: %v", path, err)
+		}
+	}
+
+	// Reopen the log. Without a fix, every segment reopens with CreatedAt set
+	// to time.Now(), so retention will not see the old sealed segments.
+	l2, err := NewLog(dir, cfg)
+	if err != nil {
+		t.Fatalf("NewLog(reopen) failed: %v", err)
+	}
+	defer func() { _ = l2.Close() }()
+
+	// Trigger retention synchronously so the test does not depend on tick timing.
+	l2.runRetention()
+
+	if got := l2.NumSegments(); got != 1 {
+		t.Errorf("NumSegments() after retention = %d, want 1 (only active segment should survive)", got)
 	}
 }
 

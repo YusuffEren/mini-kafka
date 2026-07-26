@@ -356,6 +356,60 @@ func TestIndexLookupAfterClose(t *testing.T) {
 	}
 }
 
+// TestIndexRecoveryAfterHardCrash simulates a crash before Close() could
+// shrink the backing file to the logical size. The next open must recover the
+// actual entry count, not treat the trailing preallocated zeros as valid entries.
+func TestIndexRecoveryAfterHardCrash(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "index")
+
+	const maxBytes int64 = 1024
+	idx, err := NewIndex(path, maxBytes)
+	if err != nil {
+		t.Fatalf("NewIndex failed: %v", err)
+	}
+
+	// Append exactly five entries.
+	positions := []uint32{10, 20, 30, 40, 50}
+	for i, pos := range positions {
+		if err := idx.Append(uint32(i), pos); err != nil {
+			t.Fatalf("Append(%d, %d) failed: %v", i, pos, err)
+		}
+	}
+
+	// Simulate a hard crash: unmap and close the file WITHOUT truncating it
+	// back to the logical size. On a real crash the mapping is released and
+	// the file stays at its preallocated size.
+	if err := idx.unmapLocked(); err != nil {
+		t.Fatalf("unmapLocked failed: %v", err)
+	}
+	if err := idx.file.Close(); err != nil {
+		t.Fatalf("close file failed: %v", err)
+	}
+	idx.file = nil // make the original index harmless if Close is called
+
+	// Reopen the still-preallocated file.
+	idx2, err := NewIndex(path, maxBytes)
+	if err != nil {
+		t.Fatalf("NewIndex(reopen) failed: %v", err)
+	}
+	defer idx2.Close()
+
+	if got := idx2.Entries(); got != 5 {
+		t.Errorf("Entries() after crash = %d, want 5", got)
+	}
+	pos, found, err := idx2.Lookup(4)
+	if err != nil {
+		t.Fatalf("Lookup(4) failed: %v", err)
+	}
+	if !found {
+		t.Errorf("Lookup(4) found = false, want true")
+	}
+	if pos != 50 {
+		t.Errorf("Lookup(4) position = %d, want 50", pos)
+	}
+}
+
 // TestIndexConcurrent stresses concurrent Append and Lookup operations to
 // expose data races or mutex problems. The test is meant to be run with
 // the -race flag, but it is also valid without it.

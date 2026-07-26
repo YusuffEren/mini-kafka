@@ -358,3 +358,266 @@ func TestSegmentReadFromMaxBytesZero(t *testing.T) {
 		t.Errorf("ReadFrom(0, 0) returned %d records, want 0", len(records))
 	}
 }
+
+// TestSegmentAppendAfterReopen is a regression guard for T-34: after Close and
+// NewSegment reopen, further Appends must land after the existing data (not
+// overwrite from offset 0). Without a correct write-cursor position on open,
+// removing the per-append Seek would corrupt the log.
+func TestSegmentAppendAfterReopen(t *testing.T) {
+	dir := t.TempDir()
+	const baseOffset int64 = 0
+	const nFirst = 5
+	const nSecond = 3
+
+	seg := newTestSegmentWithDir(t, dir, baseOffset, Config{})
+
+	first := make([]*Record, nFirst)
+	for i := 0; i < nFirst; i++ {
+		first[i] = &Record{
+			Timestamp: int64(1000 + i),
+			Key:       []byte("k-old"),
+			Value:     []byte("old-" + string(rune('A'+i))),
+		}
+		off, err := seg.Append(first[i])
+		if err != nil {
+			t.Fatalf("first Append #%d failed: %v", i, err)
+		}
+		if off != int64(i) {
+			t.Fatalf("first Append #%d offset = %d, want %d", i, off, i)
+		}
+	}
+	if err := seg.Flush(); err != nil {
+		t.Fatalf("Flush before close failed: %v", err)
+	}
+	sizeAfterFirst := seg.Size()
+	if sizeAfterFirst <= 0 {
+		t.Fatalf("Size after first batch = %d, want > 0", sizeAfterFirst)
+	}
+
+	// Spot-check that the first batch is readable before close.
+	for i := 0; i < nFirst; i++ {
+		got, err := seg.Read(int64(i))
+		if err != nil {
+			t.Fatalf("Read(%d) before close failed: %v", i, err)
+		}
+		if !recordEqual(got, first[i]) {
+			t.Fatalf("Read(%d) before close = %+v, want %+v", i, got, first[i])
+		}
+	}
+
+	if err := seg.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	seg2, err := NewSegment(dir, baseOffset, Config{})
+	if err != nil {
+		t.Fatalf("NewSegment(reopen) failed: %v", err)
+	}
+	defer func() { _ = seg2.Close() }()
+
+	// NewSegment does not recover NextOffset; the caller (Log) restores it.
+	seg2.SetNextOffset(nFirst)
+
+	second := make([]*Record, nSecond)
+	for i := 0; i < nSecond; i++ {
+		second[i] = &Record{
+			Timestamp: int64(2000 + i),
+			Key:       []byte("k-new"),
+			Value:     []byte("new-" + string(rune('A'+i))),
+		}
+		off, err := seg2.Append(second[i])
+		if err != nil {
+			t.Fatalf("second Append #%d failed: %v", i, err)
+		}
+		wantOff := int64(nFirst + i)
+		if off != wantOff {
+			t.Fatalf("second Append #%d offset = %d, want %d", i, off, wantOff)
+		}
+	}
+	if err := seg2.Flush(); err != nil {
+		t.Fatalf("Flush after second batch failed: %v", err)
+	}
+
+	total := nFirst + nSecond
+	if seg2.NextOffset != int64(total) {
+		t.Errorf("NextOffset = %d, want %d", seg2.NextOffset, total)
+	}
+	if got := seg2.Size(); got <= sizeAfterFirst {
+		t.Errorf("Size after second batch = %d, want > %d", got, sizeAfterFirst)
+	}
+
+	// All records — old and new — must be present in order with correct payloads.
+	for i := 0; i < nFirst; i++ {
+		got, err := seg2.Read(int64(i))
+		if err != nil {
+			t.Fatalf("Read(%d) after reopen+append failed: %v", i, err)
+		}
+		if !recordEqual(got, first[i]) {
+			t.Errorf("Read(%d) after reopen+append = %+v, want %+v", i, got, first[i])
+		}
+	}
+	for i := 0; i < nSecond; i++ {
+		off := int64(nFirst + i)
+		got, err := seg2.Read(off)
+		if err != nil {
+			t.Fatalf("Read(%d) after reopen+append failed: %v", off, err)
+		}
+		if !recordEqual(got, second[i]) {
+			t.Errorf("Read(%d) after reopen+append = %+v, want %+v", off, got, second[i])
+		}
+	}
+
+	// Sequential ReadFrom must also return the full ordered sequence.
+	all, err := seg2.ReadFrom(0, 1<<20)
+	if err != nil {
+		t.Fatalf("ReadFrom after reopen+append failed: %v", err)
+	}
+	if len(all) != total {
+		t.Fatalf("ReadFrom returned %d records, want %d", len(all), total)
+	}
+	for i, rec := range all {
+		if rec.Offset != int64(i) {
+			t.Errorf("ReadFrom[%d].Offset = %d, want %d", i, rec.Offset, i)
+		}
+	}
+}
+
+// TestSegmentAppendAfterRebuild is a regression guard for T-34: after
+// rebuildSegment truncates a corrupt tail, subsequent Appends must continue at
+// the truncated end (cursor left by rebuild's post-truncate Seek). Wrong cursor
+// placement would overwrite valid records or leave a hole.
+func TestSegmentAppendAfterRebuild(t *testing.T) {
+	dir := t.TempDir()
+	const baseOffset int64 = 0
+	const nValid = 4
+	const nAfter = 2
+
+	seg := newTestSegmentWithDir(t, dir, baseOffset, Config{})
+	defer func() { _ = seg.Close() }()
+
+	valid := make([]*Record, nValid)
+	for i := 0; i < nValid; i++ {
+		valid[i] = &Record{
+			Timestamp: int64(3000 + i),
+			Key:       []byte("k"),
+			Value:     []byte("valid-" + string(rune('0'+i))),
+		}
+		if _, err := seg.Append(valid[i]); err != nil {
+			t.Fatalf("Append valid #%d failed: %v", i, err)
+		}
+	}
+	if err := seg.Flush(); err != nil {
+		t.Fatalf("Flush valid batch failed: %v", err)
+	}
+	sizeValid := seg.Size()
+	if sizeValid <= 0 {
+		t.Fatalf("Size after valid batch = %d, want > 0", sizeValid)
+	}
+
+	// Simulate a crash that left a partial/corrupt tail after the last good
+	// record. Write garbage beyond the logical end through the underlying
+	// file handle (cursor is at EOF after Flush).
+	corruptTail := []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03}
+	if _, err := seg.logFile.Write(corruptTail); err != nil {
+		t.Fatalf("write corrupt tail failed: %v", err)
+	}
+	if err := seg.logFile.Sync(); err != nil {
+		t.Fatalf("sync corrupt tail failed: %v", err)
+	}
+	infoBefore, err := os.Stat(filepath.Join(dir, "00000000000000000000.log"))
+	if err != nil {
+		t.Fatalf("Stat before rebuild failed: %v", err)
+	}
+	if infoBefore.Size() != sizeValid+int64(len(corruptTail)) {
+		t.Fatalf("on-disk size before rebuild = %d, want %d",
+			infoBefore.Size(), sizeValid+int64(len(corruptTail)))
+	}
+
+	if err := rebuildSegment(seg, -1); err != nil {
+		t.Fatalf("rebuildSegment failed: %v", err)
+	}
+
+	if seg.NextOffset != int64(nValid) {
+		t.Errorf("NextOffset after rebuild = %d, want %d", seg.NextOffset, nValid)
+	}
+	if got := seg.Size(); got != sizeValid {
+		t.Errorf("Size after rebuild = %d, want %d (corrupt tail truncated)", got, sizeValid)
+	}
+	infoAfter, err := os.Stat(filepath.Join(dir, "00000000000000000000.log"))
+	if err != nil {
+		t.Fatalf("Stat after rebuild failed: %v", err)
+	}
+	if infoAfter.Size() != sizeValid {
+		t.Errorf("on-disk size after rebuild = %d, want %d", infoAfter.Size(), sizeValid)
+	}
+
+	// Append after rebuild must extend cleanly past the truncated end.
+	after := make([]*Record, nAfter)
+	for i := 0; i < nAfter; i++ {
+		after[i] = &Record{
+			Timestamp: int64(4000 + i),
+			Key:       []byte("k"),
+			Value:     []byte("post-" + string(rune('0'+i))),
+		}
+		off, err := seg.Append(after[i])
+		if err != nil {
+			t.Fatalf("Append after rebuild #%d failed: %v", i, err)
+		}
+		wantOff := int64(nValid + i)
+		if off != wantOff {
+			t.Fatalf("Append after rebuild #%d offset = %d, want %d", i, off, wantOff)
+		}
+	}
+	if err := seg.Flush(); err != nil {
+		t.Fatalf("Flush after post-rebuild append failed: %v", err)
+	}
+
+	total := nValid + nAfter
+	if seg.NextOffset != int64(total) {
+		t.Errorf("NextOffset after post-rebuild append = %d, want %d", seg.NextOffset, total)
+	}
+	if got := seg.Size(); got <= sizeValid {
+		t.Errorf("Size after post-rebuild append = %d, want > %d", got, sizeValid)
+	}
+	infoFinal, err := os.Stat(filepath.Join(dir, "00000000000000000000.log"))
+	if err != nil {
+		t.Fatalf("Stat final failed: %v", err)
+	}
+	if infoFinal.Size() != seg.Size() {
+		t.Errorf("on-disk size final = %d, want logical Size %d", infoFinal.Size(), seg.Size())
+	}
+
+	// Full ordered read: original valid records then post-rebuild appends.
+	for i := 0; i < nValid; i++ {
+		got, err := seg.Read(int64(i))
+		if err != nil {
+			t.Fatalf("Read(%d) after rebuild+append failed: %v", i, err)
+		}
+		if !recordEqual(got, valid[i]) {
+			t.Errorf("Read(%d) after rebuild+append = %+v, want %+v", i, got, valid[i])
+		}
+	}
+	for i := 0; i < nAfter; i++ {
+		off := int64(nValid + i)
+		got, err := seg.Read(off)
+		if err != nil {
+			t.Fatalf("Read(%d) after rebuild+append failed: %v", off, err)
+		}
+		if !recordEqual(got, after[i]) {
+			t.Errorf("Read(%d) after rebuild+append = %+v, want %+v", off, got, after[i])
+		}
+	}
+
+	all, err := seg.ReadFrom(0, 1<<20)
+	if err != nil {
+		t.Fatalf("ReadFrom after rebuild+append failed: %v", err)
+	}
+	if len(all) != total {
+		t.Fatalf("ReadFrom returned %d records, want %d", len(all), total)
+	}
+	for i, rec := range all {
+		if rec.Offset != int64(i) {
+			t.Errorf("ReadFrom[%d].Offset = %d, want %d", i, rec.Offset, i)
+		}
+	}
+}

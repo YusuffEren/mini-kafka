@@ -7,6 +7,6 @@ coverage*
 cover
 /data/
 .env
-*.log
+/test/**/*.log
 benchmark_results.json
 *.exe

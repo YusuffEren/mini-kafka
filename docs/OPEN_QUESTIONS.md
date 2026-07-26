@@ -2,7 +2,7 @@
 
 This document records design decisions made during development where the spec
 was ambiguous or silent. Each entry follows the format mandated by
-`MINI_KAFKA_SPEC.md` Section 1.5 (Belirsizlik Politikası):
+`docs/PROTOCOL.md` (Belirsizlik Politikası):
 
 > 1. Pick the simplest solution.
 > 2. Document it here: question, chosen solution, alternatives, rationale.

@@ -38,6 +38,47 @@ func encodeRecord(tb testing.TB, r *Record) []byte {
 	return buf.Bytes()
 }
 
+// TestRecordEncodeGoldenBytes locks the on-disk wire format. The expected
+// byte sequence was captured from the pre-optimization Encode path; any
+// change here means existing segment files become unreadable.
+func TestRecordEncodeGoldenBytes(t *testing.T) {
+	rec := &Record{
+		Offset:    42,
+		Timestamp: 1000,
+		Key:       []byte("test"),
+		Value:     []byte("hello"),
+	}
+	// Captured from Encode before the PutUint*/slice optimization.
+	want := []byte{
+		0x00, 0x00, 0x00, 0x26, // length = 38
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2a, // offset = 42
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xe8, // timestamp = 1000
+		0xd2, 0x4c, 0x7e, 0x81, // crc32c(attributes..value)
+		0x00,                   // attributes
+		0x00, 0x00, 0x00, 0x04, // keyLength = 4
+		0x74, 0x65, 0x73, 0x74, // key = "test"
+		0x00, 0x00, 0x00, 0x05, // valueLength = 5
+		0x68, 0x65, 0x6c, 0x6c, 0x6f, // value = "hello"
+	}
+
+	got := encodeRecord(t, rec)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("wire format changed\ngot:  %x\nwant: %x", got, want)
+	}
+
+	// Decode must recover the same logical record.
+	decoded, n, err := DecodeRecord(bytes.NewReader(got))
+	if err != nil {
+		t.Fatalf("DecodeRecord failed: %v", err)
+	}
+	if n != len(want) {
+		t.Fatalf("decoded bytes = %d, want %d", n, len(want))
+	}
+	if !recordEqual(decoded, rec) {
+		t.Fatalf("decoded mismatch: got %+v, want %+v", decoded, rec)
+	}
+}
+
 func TestEncodeDecodeRoundTrip(t *testing.T) {
 	cases := []struct {
 		name string

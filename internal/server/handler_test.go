@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/YusuffEren/mini-kafka/internal/protocol"
@@ -214,5 +215,96 @@ func TestMux_handler_panic_yaparsa_recover_UnknownError(t *testing.T) {
 	}
 	if resp.CorrelationID != 22 {
 		t.Fatalf("CorrelationID = %d, want 22", resp.CorrelationID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// T-21: handler hatalarının tek ErrUnknown'a çökmesi bug'ı
+// ---------------------------------------------------------------------------
+
+// testLogger captures Error calls so tests can verify that handler errors are
+// logged. It matches the expected logger interface for Mux.
+type testLogger struct {
+	mu       sync.Mutex
+	messages []string
+}
+
+func (l *testLogger) Error(msg string, _ ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.messages = append(l.messages, msg)
+}
+
+func (l *testLogger) HasError() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.messages) > 0
+}
+
+// TestDispatchLogsHandlerError expects that a handler error is forwarded to the
+// logger as an Error record. The current Mux has no logger, so this test fails
+// at compile time (or at runtime once the signature is updated but the wiring
+// is missing).
+func TestDispatchLogsHandlerError(t *testing.T) {
+	logger := &testLogger{}
+	mux := NewMux(logger) // logger wiring is missing in current implementation
+	mux.Handle(7, func(_ *protocol.RequestFrame) (*protocol.ResponseFrame, error) {
+		return nil, errors.New("handler failure")
+	})
+
+	req := &protocol.RequestFrame{
+		ApiKey:        7,
+		ApiVersion:    1,
+		CorrelationID: 100,
+		ClientID:      "logger-test",
+		Payload:       []byte("data"),
+	}
+	mux.Dispatch(req)
+
+	if !logger.HasError() {
+		t.Fatal("handler error was not logged")
+	}
+}
+
+// CodedError is the expected interface for errors that carry a specific protocol
+// error code. Dispatch should use the code when building the response frame.
+type CodedError interface {
+	error
+	ErrorCode() int16
+}
+
+type testCodedError struct {
+	code int16
+	msg  string
+}
+
+func (e *testCodedError) Error() string    { return e.msg }
+func (e *testCodedError) ErrorCode() int16 { return e.code }
+
+// TestDispatchCodedError expects that a handler returning a CodedError is
+// reflected in the response ErrorCode, not collapsed to ErrUnknown.
+func TestDispatchCodedError(t *testing.T) {
+	mux := NewMux()
+	mux.Handle(7, func(_ *protocol.RequestFrame) (*protocol.ResponseFrame, error) {
+		return nil, &testCodedError{
+			code: ErrUnknownTopicOrPartition,
+			msg:  "no such topic",
+		}
+	})
+
+	req := &protocol.RequestFrame{
+		ApiKey:        7,
+		ApiVersion:    1,
+		CorrelationID: 101,
+		ClientID:      "coded-error-test",
+		Payload:       []byte("data"),
+	}
+	resp := mux.Dispatch(req)
+
+	if resp.ErrorCode != ErrUnknownTopicOrPartition {
+		t.Fatalf("ErrorCode = %d, want %d (UnknownTopicOrPartition)", resp.ErrorCode, ErrUnknownTopicOrPartition)
+	}
+	if resp.CorrelationID != 101 {
+		t.Fatalf("CorrelationID = %d, want 101", resp.CorrelationID)
 	}
 }

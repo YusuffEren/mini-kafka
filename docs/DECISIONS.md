@@ -23,3 +23,4 @@
 - Long-poll fetch: busy-wait yok, sync.Cond ile bekletme
 - ISR takibi: leader-based, statik config
 - Benchmark: aynı makine, aynı disk, page cache temizlenmiş
+- AGENT_PLAN gecisi: Proje mini-kafka-AGENT_PLAN.md'deki duzeltme planina gecti. MINI_KAFKA_SPEC.md faz bazli gelistirme planindan, AGENT_PLAN wave bazli hata duzeltme planina gecildi.

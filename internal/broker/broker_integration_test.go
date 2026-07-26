@@ -221,8 +221,18 @@ func TestBroker_LongPolling_Integration(t *testing.T) {
 
 	startTime := time.Now()
 
+	// producerDone coordinates shutdown of the producer goroutine with the
+	// main test goroutine. Without it, the deferred producerConn.Close()
+	// (registered above) can fire while the producer goroutine is still
+	// blocked in readResponse, surfacing as a flaky
+	// "use of closed network connection" error. The main goroutine waits
+	// for the producer to finish before returning so the deferred close
+	// never races an in-flight read.
+	producerDone := make(chan struct{})
+
 	// Producer appends after 150ms
 	go func() {
+		defer close(producerDone)
 		time.Sleep(150 * time.Millisecond)
 
 		rec := &storage.Record{
@@ -262,6 +272,16 @@ func TestBroker_LongPolling_Integration(t *testing.T) {
 	sendRequest(t, consumerConn, fetchReqFrame)
 	fetchRespFrame := readResponse(t, consumerConn)
 	elapsed := time.Since(startTime)
+
+	// Wait for the producer goroutine to finish reading its response before
+	// proceeding to assertions and (eventually) the deferred connection
+	// closes. This eliminates the close-vs-read race that produced the flaky
+	// "use of closed network connection" failure.
+	select {
+	case <-producerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("producer goroutine did not finish within 5s")
+	}
 
 	if elapsed < 100*time.Millisecond {
 		t.Errorf("long-poll returned too fast: %v", elapsed)

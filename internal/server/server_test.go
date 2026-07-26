@@ -3,6 +3,8 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -15,7 +17,12 @@ import (
 func startServer(t *testing.T, mux *Mux) (*Server, string) {
 	t.Helper()
 
-	srv := NewServer(":0", mux, 1024)
+	srv := NewServer(ServerConfig{
+		Addr:            ":0",
+		MaxConnections:  1024,
+		IdleTimeout:     100 * time.Millisecond,
+		MaxRequestBytes: 1024 * 1024, // 1 MiB
+	}, mux)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- srv.Start()
@@ -297,8 +304,115 @@ func TestServer_bilinmeyen_api_key_UnsupportedVersion(t *testing.T) {
 
 func TestServer_gecersiz_address_Start_hata(t *testing.T) {
 	mux := NewMux()
-	srv := NewServer("not-a-valid-tcp-address!!", mux, 1024)
+	srv := NewServer(ServerConfig{Addr: "not-a-valid-tcp-address!!", MaxConnections: 1024}, mux)
 	if err := srv.Start(); err == nil {
 		t.Fatal("Start succeeded with invalid address, want error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// T-20: connection deadline / resource exhaustion
+// ---------------------------------------------------------------------------
+
+// TestIdleConnectionClosed shows that a client which connects but never sends
+// data must be disconnected after the configured idle timeout. The current
+// handleConn implementation never calls SetReadDeadline, so the Read below
+// blocks until the client-side deadline expires.
+func TestIdleConnectionClosed(t *testing.T) {
+	mux := NewMux()
+	mux.Handle(7, func(_ *protocol.RequestFrame) (*protocol.ResponseFrame, error) {
+		return &protocol.ResponseFrame{}, nil
+	})
+
+	srv, addr := startServer(t, mux)
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("net.Dial error: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// After the idle timeout the server should have closed the connection.
+	// The client-side deadline is only a safety net so the test does not hang.
+	if err := conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline error: %v", err)
+	}
+
+	var buf [1]byte
+	_, err = conn.Read(buf[:])
+	if err == nil {
+		t.Fatal("Read returned data without client sending anything; expected EOF/closed")
+	}
+	if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("expected EOF/closed after idle timeout, got %v", err)
+	}
+}
+
+// TestOversizedFrameRejected shows that a frame whose declared size exceeds the
+// server-level MaxRequestBytes limit must be rejected and the connection closed,
+// without the server allocating the full payload. The current server has no such
+// limit, so the frame is accepted and the connection stays open.
+func TestOversizedFrameRejected(t *testing.T) {
+	const maxRequestBytes = 1024 * 1024 // 1 MB
+
+	mux := NewMux()
+	mux.Handle(7, func(_ *protocol.RequestFrame) (*protocol.ResponseFrame, error) {
+		return &protocol.ResponseFrame{}, nil
+	})
+
+	srv, addr := startServer(t, mux)
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("net.Dial error: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Build a frame that is larger than the intended server limit but still
+	// below protocol.MaxFrameSize, so the protocol layer does not reject it.
+	size := int32(maxRequestBytes + 1)
+	if _, err := protocol.PutInt32(conn, size); err != nil {
+		t.Fatalf("write size error: %v", err)
+	}
+	if _, err := protocol.PutInt16(conn, 7); err != nil {
+		t.Fatalf("write apiKey error: %v", err)
+	}
+	if _, err := protocol.PutInt16(conn, 1); err != nil {
+		t.Fatalf("write apiVersion error: %v", err)
+	}
+	if _, err := protocol.PutInt32(conn, 1); err != nil {
+		t.Fatalf("write correlationID error: %v", err)
+	}
+	if _, err := protocol.PutString(conn, "oversized"); err != nil {
+		t.Fatalf("write clientID error: %v", err)
+	}
+
+	const headerLen = 2 + 2 + 4 + (2 + len("oversized")) + 4 // apiKey + apiVersion + correlationID + clientID + payload length prefix
+	payloadLen := int(size) - headerLen
+	if payloadLen < 0 {
+		t.Fatalf("declared size %d is too small for frame header", size)
+	}
+	if _, err := protocol.PutInt32(conn, int32(payloadLen)); err != nil {
+		t.Fatalf("write payload length error: %v", err)
+	}
+	if _, err := conn.Write(make([]byte, payloadLen)); err != nil {
+		t.Fatalf("write payload error: %v", err)
+	}
+
+	// The server should close the connection after seeing an oversized request.
+	// The client-side deadline is only a safety net so the test does not hang.
+	if err := conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline error: %v", err)
+	}
+
+	var buf [1]byte
+	_, err = conn.Read(buf[:])
+	if err == nil {
+		t.Fatal("Read returned data after oversized frame; expected connection close")
+	}
+	if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("expected EOF/closed after oversized frame, got %v", err)
 	}
 }

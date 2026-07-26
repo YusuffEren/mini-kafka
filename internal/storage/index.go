@@ -89,6 +89,36 @@ func NewIndex(path string, maxBytes int64) (*Index, error) {
 		return nil, err
 	}
 
+	// Health check for crash recovery. When the process dies before Close
+	// can shrink the file back to the logical size, the on-disk file is
+	// still maxBytes long and the tail is filled with zero entries that
+	// were never written. Taking info.Size() at face value would make
+	// Entries() report far too many entries and Lookup would return
+	// positions of 0 for offsets that do not really exist.
+	//
+	// We scan backwards from the candidate end and drop trailing entries
+	// whose relativeOffset and position are both zero. Entry[0] is kept
+	// even when it is (0,0): the first record of a segment legitimately
+	// maps to (relativeOffset=0, position=0), so a zero first entry is
+	// not proof of corruption. This means an all-zero preallocated file
+	// (crash before any append) reports one entry; the upper-level Log
+	// rebuilds the active segment's index from the .log file anyway, so
+	// this only matters for sealed segments, which are never empty.
+	if logical > 0 {
+		n := logical / entrySize
+		for n > 1 {
+			off := (n - 1) * entrySize
+			rel := binary.BigEndian.Uint32(data[off : off+4])
+			pos := binary.BigEndian.Uint32(data[off+4 : off+8])
+			if rel == 0 && pos == 0 {
+				n--
+				continue
+			}
+			break
+		}
+		logical = n * entrySize
+	}
+
 	return &Index{
 		file:     f,
 		mmapData: data,
@@ -96,6 +126,53 @@ func NewIndex(path string, maxBytes int64) (*Index, error) {
 		size:     logical,
 		maxSize:  maxBytes,
 	}, nil
+}
+
+// Seal flushes the index's logical size down to the backing file and remaps
+// exactly that region. After Seal the index can no longer accept appends
+// (maxSize equals size, so Append returns ErrIndexFull) but remains usable
+// for Lookup. Seal is intended to be called when the owning segment is
+// rotated: it reclaims the preallocated slack without closing the file, so
+// the sealed segment keeps serving reads while its on-disk footprint
+// matches the number of entries it actually holds.
+func (i *Index) Seal() error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	if i.file == nil {
+		return errors.New("index: already closed")
+	}
+
+	if err := i.unmapLocked(); err != nil {
+		return err
+	}
+
+	if err := i.file.Truncate(i.size); err != nil {
+		_ = i.file.Close()
+		i.file = nil
+		return err
+	}
+
+	// An empty index cannot be remapped (mmap of zero length is invalid).
+	// Leave it unmapped with maxSize zero so Append fails with ErrIndexFull
+	// and Close still drains the file cleanly.
+	if i.size == 0 {
+		i.mmapData = nil
+		i.unmap = nil
+		i.maxSize = 0
+		return nil
+	}
+
+	data, unmap, err := mmapIndex(i.file, int(i.size))
+	if err != nil {
+		_ = i.file.Close()
+		i.file = nil
+		return err
+	}
+	i.mmapData = data
+	i.unmap = unmap
+	i.maxSize = i.size
+	return nil
 }
 
 // Append writes a new (relativeOffset, position) entry at the end of the index.

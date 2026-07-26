@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -127,6 +128,7 @@ type Segment struct {
 	NextOffset int64
 
 	logFile       *os.File
+	readFile      *os.File // shared read-only handle; ReadAt is position-independent & concurrency-safe
 	writer        *bufio.Writer
 	index         *Index
 	maxBytes      int64
@@ -158,12 +160,13 @@ type Segment struct {
 //
 // The .log file is opened with O_RDWR (without O_APPEND) so that the same
 // handle can be used both to append records and to truncate the file during
-// recovery. Append positions the write cursor at end of file explicitly via
-// Seek before each write, which preserves append semantics while leaving the
-// handle writable for SetEndOfFile/Truncate. The .index file is memory-mapped
-// via NewIndex. NextOffset is initialised to baseOffset. NewSegment does not
-// attempt to recover NextOffset from existing on-disk contents; recovery is
-// the responsibility of the upper-level Log type.
+// recovery. After open, the write cursor is positioned once at the current
+// end of file (bytesWritten) so that subsequent Append calls can stream
+// through the buffered writer without a per-record Seek. rebuildSegment is
+// responsible for re-seeking after a truncate. The .index file is memory-
+// mapped via NewIndex. NextOffset is initialised to baseOffset. NewSegment
+// does not attempt to recover NextOffset from existing on-disk contents;
+// recovery is the responsibility of the upper-level Log type.
 func NewSegment(dir string, baseOffset int64, cfg Config) (*Segment, error) {
 	cfg = cfg.withDefaults()
 
@@ -187,9 +190,32 @@ func NewSegment(dir string, baseOffset int64, cfg Config) (*Segment, error) {
 	// freshly created file reports size 0, so this is a no-op for new
 	// segments. The active segment's bytesWritten is later overwritten by
 	// rebuildSegment during recovery.
+	//
+	// CreatedAt is derived from the .log file's mtime when an existing
+	// non-empty segment is reopened. This preserves the segment's true age
+	// across broker restarts so that time-based retention still fires for
+	// old sealed segments. A freshly created (size 0) file is assigned
+	// time.Now(), matching the original behaviour for new segments.
 	var bytesWritten int64
+	var createdAt time.Time
 	if info, statErr := logFile.Stat(); statErr == nil {
 		bytesWritten = info.Size()
+		if bytesWritten > 0 {
+			createdAt = info.ModTime()
+		} else {
+			createdAt = time.Now()
+		}
+	} else {
+		createdAt = time.Now()
+	}
+
+	// Position the write cursor at the logical end once. Append no longer
+	// seeks per record; the buffered writer streams sequentially from here.
+	// Without this seek, reopening a non-empty segment would overwrite from
+	// offset 0 on the first flush.
+	if _, err := logFile.Seek(bytesWritten, io.SeekStart); err != nil {
+		_ = logFile.Close()
+		return nil, fmt.Errorf("segment: seek log to end: %w", err)
 	}
 
 	index, err := NewIndex(indexPath, cfg.IndexMaxBytes)
@@ -198,16 +224,29 @@ func NewSegment(dir string, baseOffset int64, cfg Config) (*Segment, error) {
 		return nil, fmt.Errorf("segment: open index file %q: %w", indexPath, err)
 	}
 
+	// Open a long-lived read-only handle on the .log file. Reads go through
+	// this handle via io.NewSectionReader + ReadAt, which is position-
+	// independent and safe for concurrent use, so the read path no longer
+	// pays an os.Open per Read/ReadFrom and avoids contention with the
+	// shared write cursor on logFile.
+	readFile, err := os.Open(logPath)
+	if err != nil {
+		_ = index.Close()
+		_ = logFile.Close()
+		return nil, fmt.Errorf("segment: open log for read %q: %w", logPath, err)
+	}
+
 	return &Segment{
 		BaseOffset:    baseOffset,
 		NextOffset:    baseOffset,
 		logFile:       logFile,
+		readFile:      readFile,
 		writer:        bufio.NewWriterSize(logFile, 256*1024),
 		index:         index,
 		maxBytes:      cfg.SegmentBytes,
 		indexInterval: cfg.IndexIntervalBytes,
 		bytesWritten:  bytesWritten,
-		CreatedAt:     time.Now(),
+		CreatedAt:     createdAt,
 	}, nil
 }
 
@@ -240,15 +279,20 @@ func (s *Segment) Append(rec *Record) (int64, error) {
 		return 0, errors.New("segment: append nil record")
 	}
 
-	// Position the write cursor at the current end of file. The log file is
-	// opened without O_APPEND (so the handle can also be used to truncate
-	// during recovery), therefore each append must seek to end explicitly.
-	// The buffered writer has not been flushed yet, so seeking the underlying
-	// file now does not disturb any buffered bytes: they will be written at
-	// this cursor position when the writer eventually flushes.
-	if _, err := s.logFile.Seek(0, io.SeekEnd); err != nil {
-		return 0, fmt.Errorf("segment: seek log end: %w", err)
+	// Guard against silent uint32 overflow of the index position. The config
+	// layer rejects segment_bytes > math.MaxUint32, so this should never fire
+	// in a correctly configured broker. It exists as a loud failure in case the
+	// guard is bypassed (e.g. a Config constructed directly in code): without
+	// it, position would wrap and the index would point reads at the wrong
+	// byte offset, silently corrupting the log.
+	if s.bytesWritten > math.MaxUint32 {
+		return 0, fmt.Errorf("segment: log position %d exceeds uint32 index range", s.bytesWritten)
 	}
+
+	// The write cursor is positioned at end-of-file once in NewSegment (and
+	// again after truncate in rebuildSegment). Append streams through the
+	// buffered writer without a per-record Seek: sequential writes advance
+	// the underlying file offset naturally when the buffer flushes.
 
 	// Assign the offset and the write position for this record.
 	offset := s.NextOffset
@@ -304,11 +348,56 @@ func (s *Segment) Read(offset int64) (*Record, error) {
 		return nil, fmt.Errorf("segment: index lookup: %w", err)
 	}
 
+	// On an exact index match we can skip the record-by-record scan: the
+	// position points directly at the requested record, so a single
+	// DecodeRecord at that position yields it. When the index only has a
+	// nearest-lower entry (found == false) we fall back to scanFrom, which
+	// seeks to the nearest lower position and scans forward until the
+	// target offset is reached.
+	if found {
+		rec, scanErr := s.readAt(int64(position), offset)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		return rec, nil
+	}
+
 	rec, err := s.scanFrom(int64(position), offset)
 	if err != nil {
 		return nil, err
 	}
-	_ = found // found is informational; scanFrom handles the not-found case.
+	return rec, nil
+}
+
+// readAt opens a read handle on the .log file, seeks to position and decodes a
+// single record, verifying that its offset matches target. It is the fast path
+// used when the index reported an exact match for the requested offset. The
+// caller must hold s.mu (at least read).
+func (s *Segment) readAt(position int64, target int64) (*Record, error) {
+	reader, closer, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer closer()
+
+	if _, err := reader.Seek(position, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("segment: seek log: %w", err)
+	}
+
+	br := bufio.NewReaderSize(reader, 64*1024)
+	rec, _, err := DecodeRecord(br)
+	if err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil, fmt.Errorf("segment: offset %d not found", target)
+		}
+		return nil, fmt.Errorf("segment: decode record: %w", err)
+	}
+	if rec.Offset != target {
+		// The index entry did not actually point at the target record
+		// (e.g. the index is stale or corrupt). Fall back to a forward
+		// scan from this position to locate it.
+		return s.scanFrom(position, target)
+	}
 	return rec, nil
 }
 
@@ -348,10 +437,15 @@ func (s *Segment) ReadFrom(offset int64, maxBytes int32) ([]*Record, error) {
 		return nil, fmt.Errorf("segment: seek log: %w", err)
 	}
 
+	// Buffer the read handle so DecodeRecord issues a single large read per
+	// chunk instead of one syscall per field. 64 KiB matches the write-side
+	// order of magnitude and amortises the per-record decode cost.
+	br := bufio.NewReaderSize(reader, 64*1024)
+
 	var records []*Record
 	var accumulated int32
 	for {
-		rec, n, err := DecodeRecord(reader)
+		rec, n, err := DecodeRecord(br)
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				break // reached end of written data
@@ -425,6 +519,11 @@ func (s *Segment) Close() error {
 			firstErr = fmt.Errorf("segment: close index: %w", err)
 		}
 	}
+	if s.readFile != nil {
+		if err := s.readFile.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("segment: close read handle: %w", err)
+		}
+	}
 	if s.logFile != nil {
 		if err := s.logFile.Close(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("segment: close log file: %w", err)
@@ -478,8 +577,8 @@ func (s *Segment) Flush() error {
 // be invisible to them. FlushWriter makes that data visible without paying
 // the cost of an fsync on every read.
 func (s *Segment) FlushWriter() error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.closed {
 		return ErrSegmentClosed
@@ -504,8 +603,12 @@ func (s *Segment) scanFrom(position int64, target int64) (*Record, error) {
 		return nil, fmt.Errorf("segment: seek log: %w", err)
 	}
 
+	// Buffer the read handle so DecodeRecord issues a single large read per
+	// chunk instead of one syscall per field.
+	br := bufio.NewReaderSize(reader, 64*1024)
+
 	for {
-		rec, _, err := DecodeRecord(reader)
+		rec, _, err := DecodeRecord(br)
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				return nil, fmt.Errorf("segment: offset %d not found", target)
@@ -523,14 +626,23 @@ func (s *Segment) scanFrom(position int64, target int64) (*Record, error) {
 	}
 }
 
-// readHandle opens a fresh read-only handle on the .log file. Returning a
-// separate *os.File avoids contention with the shared write cursor. The
-// returned closer must be invoked when the caller is done.
-func (s *Segment) readHandle() (*os.File, func(), error) {
-	f, err := os.Open(s.logFile.Name())
-	if err != nil {
-		return nil, nil, fmt.Errorf("segment: open log for read: %w", err)
+// readHandle returns a fresh, position-independent reader over the segment's
+// .log file backed by the long-lived shared read handle (s.readFile). Because
+// io.SectionReader uses ReadAt under the hood, which is position-independent
+// and safe for concurrent use, multiple readers may be created and used
+// concurrently without disturbing one another or the shared write cursor on
+// logFile. The returned closer is a no-op (the underlying handle is owned by
+// the segment and closed in Close); it is kept so callers can `defer closer()`
+// unchanged.
+//
+// The section is bounded by s.bytesWritten, the logical end-of-file. The caller
+// holds s.mu (at least read), so bytesWritten is stable for the duration of the
+// read and reflects all data flushed to the file (the Log layer FlushWriter's
+// the active segment before reading).
+func (s *Segment) readHandle() (io.ReadSeeker, func(), error) {
+	if s.readFile == nil {
+		return nil, nil, fmt.Errorf("segment: read handle not available")
 	}
-	closer := func() { _ = f.Close() }
-	return f, closer, nil
+	sr := io.NewSectionReader(s.readFile, 0, s.bytesWritten)
+	return sr, func() {}, nil
 }

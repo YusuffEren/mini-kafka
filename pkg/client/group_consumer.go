@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -61,6 +62,9 @@ func DefaultGroupConsumerConfig() GroupConsumerConfig {
 // GroupConsumer manages high-level consumer group partition consumption and
 // rebalancing. It handles JoinGroup/SyncGroup flows, heartbeats, offset
 // management, and partition assignment automatically.
+//
+// GroupConsumer is safe for concurrent use by multiple goroutines; requests
+// are serialised over a single connection.
 type GroupConsumer struct {
 	addrs   []string
 	groupID string
@@ -76,6 +80,11 @@ type GroupConsumer struct {
 	leaderID           string
 	assignedPartitions []TopicPartition
 	partitionOffsets   map[TopicPartition]int64
+
+	// reqMu serialises full request/response round-trips so concurrent
+	// callers (Poll, Commit, heartbeat, auto-commit) cannot interleave frames
+	// or read each other's responses. See Producer.reqMu for rationale.
+	reqMu sync.Mutex
 
 	stopCh   chan struct{}
 	rejoinCh chan struct{}
@@ -165,6 +174,20 @@ func (gc *GroupConsumer) dialNewConn() (net.Conn, error) {
 }
 
 func (gc *GroupConsumer) sendRequestOnConn(conn net.Conn, apiKey int16, payload []byte) (*protocol.ResponseFrame, error) {
+	// Serialise the full round-trip so concurrent callers cannot interleave
+	// request frames or read each other's responses.
+	gc.reqMu.Lock()
+	defer gc.reqMu.Unlock()
+
+	// Wrap this request's connection in buffered reader/writer. Because
+	// GroupConsumer dials a fresh connection per request, the bufio wrappers
+	// are created locally and discarded with the conn — there is no shared
+	// bufio state to leak bytes from one connection into the next. A 64 KiB
+	// buffer matches a typical TCP window and coalesces the many small reads
+	// a frame decode otherwise performs.
+	br := bufio.NewReaderSize(conn, 64*1024)
+	bw := bufio.NewWriterSize(conn, 64*1024)
+
 	corrID := atomic.AddInt32(&gc.nextID, 1)
 	frame := &protocol.RequestFrame{
 		ApiKey:        apiKey,
@@ -174,13 +197,27 @@ func (gc *GroupConsumer) sendRequestOnConn(conn net.Conn, apiKey int16, payload 
 		Payload:       payload,
 	}
 
-	if _, err := frame.Write(conn); err != nil {
+	if _, err := frame.Write(bw); err != nil {
 		return nil, fmt.Errorf("group_consumer: write frame: %w", err)
 	}
+	// Flush after every request: bufio.Writer buffers writes locally and will
+	// not push them to the conn until the buffer fills or Flush is called.
+	// Skipping the flush leaves the request stuck in the buffer and the broker
+	// never sees it, deadlocking the round-trip.
+	if err := bw.Flush(); err != nil {
+		return nil, fmt.Errorf("group_consumer: flush frame: %w", err)
+	}
 
-	respFrame, err := protocol.ReadResponseFrame(conn)
+	respFrame, err := protocol.ReadResponseFrame(br)
 	if err != nil {
 		return nil, fmt.Errorf("group_consumer: read response: %w", err)
+	}
+
+	if respFrame.CorrelationID != corrID {
+		// The response stream is out of sync with our request stream; the
+		// connection is now unusable for any in-flight or future requests.
+		_ = conn.Close()
+		return nil, fmt.Errorf("group_consumer: correlation id mismatch: got %d, want %d", respFrame.CorrelationID, corrID)
 	}
 
 	return respFrame, nil

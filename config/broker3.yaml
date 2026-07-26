@@ -1,10 +1,7 @@
-# 3 broker'lık cluster örneği. Tek broker çalıştırmak için
-# config/broker-single.yaml kullanın; bu dosyayla tek broker
-# başlatılırsa partition'ların 2/3'ü NotLeaderForPartition döner.
 broker:
-  id: 1
+  id: 3
   host: "0.0.0.0"
-  port: 9092
+  port: 9094
   data_dir: "/var/lib/mini-kafka"
   max_connections: 1024
   request_timeout_ms: 30000
@@ -13,7 +10,7 @@ log:
   segment_bytes: 134217728
   segment_ms: 604800000
   index_interval_bytes: 4096
-  index_max_bytes: 524288
+  index_max_bytes: 10485760
   retention_ms: 604800000
   retention_bytes: -1
   flush_messages: 0
@@ -44,7 +41,7 @@ cluster:
       port: 9092
     - id: 2
       host: "broker2"
-      port: 9092
+      port: 9093
     - id: 3
       host: "broker3"
-      port: 9092
+      port: 9094

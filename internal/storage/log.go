@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -17,9 +18,17 @@ import (
 // been closed.
 var ErrLogClosed = errors.New("log: already closed")
 
-// ErrEmptyLog is returned when an operation requires at least one record but
-// the log holds none.
-var ErrEmptyLog = errors.New("log: no records")
+// ErrEmptyBatch is returned by AppendBatch when the supplied record slice is
+// empty. It signals a caller programming error rather than an empty log: the
+// log itself may well hold records, but the batch contained none.
+var ErrEmptyBatch = errors.New("log: empty batch")
+
+// ErrEmptyLog is retained as an alias for ErrEmptyBatch for backwards
+// compatibility with callers and tests that still reference it. New code
+// should use ErrEmptyBatch.
+//
+// Deprecated: use ErrEmptyBatch.
+var ErrEmptyLog = ErrEmptyBatch
 
 // Log is a partition log: an ordered, append-only collection of segments
 // backed by files inside a single directory. At any time exactly one segment
@@ -166,7 +175,7 @@ func (l *Log) AppendBatch(recs []*Record) (int64, error) {
 		return 0, ErrLogClosed
 	}
 	if len(recs) == 0 {
-		return 0, ErrEmptyLog
+		return 0, ErrEmptyBatch
 	}
 
 	var base int64
@@ -468,6 +477,16 @@ func (l *Log) rotateLocked() error {
 		return fmt.Errorf("log: rotate: flush: %w", err)
 	}
 
+	// Seal the outgoing segment's index: shrink the preallocated .index
+	// file down to the number of entries actually written and remap that
+	// region. Without this the sealed .index stays at its 10 MiB
+	// preallocated size on disk, wasting space and confusing recovery
+	// (a subsequent crash would leave a file full of trailing zero
+	// entries that NewIndex must then diagnose).
+	if err := l.active.index.Seal(); err != nil {
+		return fmt.Errorf("log: rotate: seal index: %w", err)
+	}
+
 	base := l.active.NextOffset
 	seg, err := NewSegment(l.dir, base, l.config)
 	if err != nil {
@@ -716,9 +735,13 @@ func rebuildSegment(seg *Segment, stopOffset int64) error {
 		return fmt.Errorf("rebuild: seek log: %w", err)
 	}
 
+	// Buffer the read handle so the record-by-record scan issues a small
+	// number of large reads rather than one syscall per decoded field.
+	br := bufio.NewReaderSize(readFile, 64*1024)
+
 	for {
 		pos := seg.bytesWritten
-		rec, n, err := DecodeRecord(readFile)
+		rec, n, err := DecodeRecord(br)
 		if err != nil {
 			// Corrupt or truncated tail: stop and truncate the log at the
 			// start of this record (pos).
@@ -754,16 +777,17 @@ func rebuildSegment(seg *Segment, stopOffset int64) error {
 	// from a clean boundary.
 	//
 	// The segment's own log handle is opened with O_RDWR (no O_APPEND) so
-	// that it can be used both for appending (Append seeks to end before each
-	// write) and for truncation here. On Windows, O_APPEND maps to
-	// FILE_APPEND_DATA which forbids SetEndOfFile; using plain O_RDWR avoids
-	// that restriction and lets Truncate succeed on the same handle.
+	// that it can be used both for appending and for truncation here. On
+	// Windows, O_APPEND maps to FILE_APPEND_DATA which forbids SetEndOfFile;
+	// using plain O_RDWR avoids that restriction and lets Truncate succeed
+	// on the same handle.
 	if err := seg.logFile.Truncate(seg.bytesWritten); err != nil {
 		return fmt.Errorf("rebuild: truncate log: %w", err)
 	}
-	// Reposition the write cursor at the new end of file so that any
-	// immediate append (which seeks to end anyway) and any external flush
-	// of the buffered writer land at the correct position.
+	// Reposition the write cursor at the new end of file. Append no longer
+	// seeks per record, so this seek is mandatory: without it the next
+	// buffered flush would write at the pre-truncate cursor (past EOF or
+	// into a hole) and corrupt the log.
 	if _, err := seg.logFile.Seek(seg.bytesWritten, io.SeekStart); err != nil {
 		return fmt.Errorf("rebuild: seek log after truncate: %w", err)
 	}

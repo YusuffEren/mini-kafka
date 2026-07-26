@@ -1,7 +1,7 @@
 // Package protocol implements the wire codec for the mini-kafka binary protocol.
 //
-// This file implements request and response framing (MINI_KAFKA_SPEC.md Section
-// 5.1). A frame is a length-prefixed sequence of fields encoded with the
+// This file implements request and response framing (docs/PROTOCOL.md Section
+// 1). A frame is a length-prefixed sequence of fields encoded with the
 // primitive codec functions defined in codec.go. All multi-byte integers are
 // big-endian.
 package protocol
@@ -65,12 +65,44 @@ type ResponseFrame struct {
 // ErrFrameTooLarge when size is negative or exceeds MaxFrameSize, and
 // ErrFrameSizeMismatch when the body actually consumed does not match the
 // declared size.
+//
+// It is a convenience wrapper around ReadRequestFrameWithLimit that applies
+// the package-level MaxFrameSize cap and no additional server-level limit.
 func ReadRequestFrame(r io.Reader) (*RequestFrame, error) {
+	return ReadRequestFrameWithLimit(r, 0)
+}
+
+// ReadRequestFrameWithLimit reads a single request frame from r, enforcing an
+// additional server-level size cap on top of the protocol MaxFrameSize. It
+// first reads the int32 size field, validates it against MaxFrameSize and the
+// provided maxRequestBytes, and then decodes the remaining fields from an
+// io.LimitedReader bounded by size. It returns ErrFrameTooLarge when size is
+// negative, exceeds MaxFrameSize, or — when maxRequestBytes > 0 — exceeds
+// maxRequestBytes. The frame body is NOT read when the size is rejected, so
+// the caller can close the connection without draining a large payload.
+//
+// A maxRequestBytes value of 0 disables the server-level limit; only the
+// protocol MaxFrameSize cap is enforced in that case.
+func ReadRequestFrameWithLimit(r io.Reader, maxRequestBytes int32) (*RequestFrame, error) {
 	size, err := Int32(r)
 	if err != nil {
 		return nil, err
 	}
 	if size < 0 || size > MaxFrameSize {
+		return nil, ErrFrameTooLarge
+	}
+	if maxRequestBytes > 0 && size > maxRequestBytes {
+		// Reject the frame without decoding its fields, but still drain the
+		// declared body off the wire so the peer can finish sending its
+		// bytes and observe a clean EOF rather than a connection-reset write
+		// error. io.CopyN streams through a small internal buffer, so this
+		// does not allocate the full payload — the OOM protection the
+		// server-level limit is meant to provide is preserved. Any read
+		// deadline set by the caller (e.g. an idle timeout) still applies
+		// and bounds how long this drain may block.
+		if _, derr := io.CopyN(io.Discard, r, int64(size)); derr != nil {
+			return nil, derr
+		}
 		return nil, ErrFrameTooLarge
 	}
 

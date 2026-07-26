@@ -147,8 +147,12 @@ func (b *Broker) updateReplicaLEO(topic string, partition int32, replicaID int32
 	return tracker.UpdateLEO(replicaID, leo, leaderLEO)
 }
 
-// waitForAcksAll blocks until HW reaches requiredHW or timeout elapses.
-func (b *Broker) waitForAcksAll(topic string, partition int32, requiredHW int64, timeoutMs int32) error {
+// waitForAcksAll blocks until HW reaches requiredHW or the shared deadline
+// elapses. The deadline is computed once at the start of handleProduce and
+// shared across every partition in the request, matching Kafka's semantics:
+// TimeoutMs is a single budget for the whole produce, not a per-partition
+// budget that restarts on each iteration.
+func (b *Broker) waitForAcksAll(topic string, partition int32, requiredHW int64, deadline time.Time) error {
 	if requiredHW <= 0 {
 		return nil
 	}
@@ -166,18 +170,20 @@ func (b *Broker) waitForAcksAll(topic string, partition int32, requiredHW int64,
 		b.purgatory.CheckAndComplete(topic, partition, tracker.HighWatermark())
 	}
 
-	timeout := time.Duration(timeoutMs) * time.Millisecond
-	if timeout <= 0 {
-		timeout = time.Duration(b.config.Broker.RequestTimeoutMs) * time.Millisecond
+	// If the shared deadline has already passed, do not wait at all.
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		b.purgatory.Cancel(id)
+		return errProduceTimeout
 	}
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
+
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
 
 	select {
 	case err := <-respCh:
 		return err
-	case <-time.After(timeout):
+	case <-timer.C:
 		b.purgatory.Cancel(id)
 		return errProduceTimeout
 	}

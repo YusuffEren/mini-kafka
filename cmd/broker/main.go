@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"flag"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,23 +13,57 @@ import (
 	"github.com/YusuffEren/mini-kafka/internal/config"
 )
 
+// parseLogLevel maps the configured LogLevel string onto the corresponding
+// slog.Level. Unknown or empty values fall back to slog.LevelInfo so the
+// broker always starts with a usable logger.
+func parseLogLevel(level string) slog.Level {
+	switch level {
+	case "debug", "DEBUG":
+		return slog.LevelDebug
+	case "warn", "WARN":
+		return slog.LevelWarn
+	case "error", "ERROR":
+		return slog.LevelError
+	case "info", "INFO":
+		return slog.LevelInfo
+	default:
+		return slog.LevelInfo
+	}
+}
+
 func main() {
 	configPath := flag.String("config", "config/broker.yaml", "path to broker configuration file")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Fatalf("failed to load config from %s: %v", *configPath, err)
+		// The logger is not configured yet; use the standard logger at the
+		// highest severity so a config load failure is never silenced.
+		slog.Error("failed to load config", "path", *configPath, "err", err)
+		os.Exit(1)
 	}
+
+	// Configure the structured logger from the loaded config so every
+	// downstream component (broker, server mux, handlers) inherits the same
+	// level and output destination.
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: parseLogLevel(cfg.Broker.LogLevel),
+	}))
+	slog.SetDefault(logger)
 
 	b, err := broker.New(cfg)
 	if err != nil {
-		log.Fatalf("failed to create broker: %v", err)
+		slog.Error("failed to create broker", "err", err)
+		os.Exit(1)
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("Starting mini-kafka broker on %s:%d (data dir: %s)...", cfg.Broker.Host, cfg.Broker.Port, cfg.Broker.DataDir)
+		slog.Info("starting mini-kafka broker",
+			"host", cfg.Broker.Host,
+			"port", cfg.Broker.Port,
+			"data_dir", cfg.Broker.DataDir,
+		)
 		errCh <- b.Start()
 	}()
 
@@ -39,17 +73,18 @@ func main() {
 	select {
 	case err := <-errCh:
 		if err != nil {
-			log.Fatalf("broker start error: %v", err)
+			slog.Error("broker start error", "err", err)
+			os.Exit(1)
 		}
 	case sig := <-sigCh:
-		log.Printf("Received signal %s, initiating graceful shutdown...", sig)
+		slog.Info("received signal, initiating graceful shutdown", "signal", sig.String())
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		if err := b.Shutdown(ctx); err != nil {
-			log.Printf("error during shutdown: %v", err)
+			slog.Error("error during shutdown", "err", err)
 		} else {
-			log.Println("Broker shutdown cleanly.")
+			slog.Info("broker shutdown cleanly")
 		}
 	}
 }

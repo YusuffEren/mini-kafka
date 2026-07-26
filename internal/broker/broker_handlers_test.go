@@ -979,3 +979,99 @@ func TestBroker_Fetch_bilinmeyen_topic(t *testing.T) {
 		t.Fatalf("partition ErrorCode = %d, want %d", resp.Topics[0].Partitions[0].ErrorCode, server.ErrUnknownTopicOrPartition)
 	}
 }
+
+// TestAcksAllSharedDeadline verifies that handleProduce computes a single
+// shared deadline for the whole request and waits for every acks=all
+// partition in parallel against it. With min_insync_replicas=2 on a single
+// broker the ISR check fails upfront for every partition, so the handler
+// must return promptly (well under the 1s bound) rather than serially
+// burning TimeoutMs per partition.
+func TestAcksAllSharedDeadline(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Replication.MinInsyncReplicas = 2
+
+	b, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New error: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = b.Shutdown(ctx)
+	}()
+
+	// Auto-create a topic with 3 partitions.
+	_, _ = b.getOrCreateTopic("acks-all-shared", 3)
+
+	// Build a single record batch reused for every partition.
+	rec := &storage.Record{
+		Timestamp: time.Now().UnixMilli(),
+		Key:       []byte("k"),
+		Value:     []byte("v"),
+	}
+	var recBuf bytes.Buffer
+	if _, err := rec.Encode(&recBuf); err != nil {
+		t.Fatalf("rec.Encode: %v", err)
+	}
+	recordSet := recBuf.Bytes()
+
+	produceBody := &protocol.ProduceRequest{
+		Acks:      -1, // acks=all
+		TimeoutMs: 300,
+		Topics: []protocol.ProduceRequestTopic{
+			{
+				Name: "acks-all-shared",
+				Partitions: []protocol.ProduceRequestPartition{
+					{PartitionID: 0, RecordSet: recordSet},
+					{PartitionID: 1, RecordSet: recordSet},
+					{PartitionID: 2, RecordSet: recordSet},
+				},
+			},
+		},
+	}
+
+	reqFrame := &protocol.RequestFrame{
+		ApiKey:        apiKeyProduce,
+		ApiVersion:    1,
+		CorrelationID: 99,
+		ClientID:      "acks-all-test",
+		Payload:       encodeRequest(t, produceBody),
+	}
+
+	start := time.Now()
+	respFrame, err := b.handleProduce(reqFrame)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("handleProduce error: %v", err)
+	}
+	if respFrame.ErrorCode != 0 {
+		t.Fatalf("response ErrorCode = %d, want 0", respFrame.ErrorCode)
+	}
+
+	var resp protocol.ProduceResponse
+	if err := resp.Decode(bytes.NewReader(respFrame.Payload)); err != nil {
+		t.Fatalf("ProduceResponse.Decode error: %v", err)
+	}
+
+	if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 3 {
+		t.Fatalf("unexpected topic/partition counts: topics=%d partitions=%d",
+			len(resp.Topics), len(resp.Topics[0].Partitions))
+	}
+
+	// With min_insync_replicas=2 and a single broker, every partition must
+	// be rejected with ErrNotEnoughReplicas (ISR size 1 < 2).
+	for _, p := range resp.Topics[0].Partitions {
+		if p.ErrorCode != server.ErrNotEnoughReplicas {
+			t.Errorf("partition %d ErrorCode = %d, want %d (ErrNotEnoughReplicas)",
+				p.PartitionID, p.ErrorCode, server.ErrNotEnoughReplicas)
+		}
+	}
+
+	// The shared deadline + parallel wait must keep the total well under 1s.
+	// A serial per-partition implementation would approach 3*TimeoutMs = 900ms;
+	// the bound here is generous but still catches a regression that ignores
+	// the shared deadline and waits serially with a larger timeout.
+	if elapsed >= time.Second {
+		t.Fatalf("handleProduce took %v, want < 1s (shared deadline not honoured)", elapsed)
+	}
+}

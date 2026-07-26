@@ -1,7 +1,7 @@
 # Storage Layer — Normative Specification
 
 This document describes the on-disk storage format used by mini-kafka's partition log.
-It is derived from `MINI_KAFKA_SPEC.md` Section 4 and the implementation in `internal/storage/`.
+It is derived from `docs/PROTOCOL.md` Section 3 and the implementation in `internal/storage/`.
 
 ---
 

@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
@@ -85,69 +84,48 @@ func (r *Record) Encode(w io.Writer) (int, error) {
 		return 0, ErrRecordTooLarge
 	}
 
-	// Build the CRC-covered region first: attributes + keyLength + key +
-	// valueLength + value. We buffer it so we can compute the CRC before
-	// emitting the fixed header.
-	var crcBuf bytes.Buffer
-	if err := binary.Write(&crcBuf, binary.BigEndian, r.Attributes); err != nil {
-		return 0, err
-	}
+	// Single allocation for the full wire image. Layout offsets:
+	//   0:4   length
+	//   4:12  offset
+	//  12:20  timestamp
+	//  20:24  crc32
+	//  24:    attributes..value  (CRC-covered region)
+	buf := make([]byte, total)
+
+	binary.BigEndian.PutUint32(buf[0:4], uint32(total-4))
+	binary.BigEndian.PutUint64(buf[4:12], uint64(r.Offset))
+	binary.BigEndian.PutUint64(buf[12:20], uint64(r.Timestamp))
+	// buf[20:24] filled after CRC is computed over the body.
+
+	const crcStart = 24
+	off := crcStart
+	buf[off] = byte(r.Attributes)
+	off++
+
 	if r.Key != nil {
-		if err := binary.Write(&crcBuf, binary.BigEndian, int32(len(r.Key))); err != nil {
-			return 0, err
-		}
-		if _, err := crcBuf.Write(r.Key); err != nil {
-			return 0, err
-		}
+		binary.BigEndian.PutUint32(buf[off:off+4], uint32(len(r.Key)))
+		off += 4
+		copy(buf[off:], r.Key)
+		off += len(r.Key)
 	} else {
-		if err := binary.Write(&crcBuf, binary.BigEndian, nullLength); err != nil {
-			return 0, err
-		}
+		// nullLength is -1; write as two's-complement int32 bits.
+		binary.BigEndian.PutUint32(buf[off:off+4], ^uint32(0))
+		off += 4
 	}
+
 	if r.Value != nil {
-		if err := binary.Write(&crcBuf, binary.BigEndian, int32(len(r.Value))); err != nil {
-			return 0, err
-		}
-		if _, err := crcBuf.Write(r.Value); err != nil {
-			return 0, err
-		}
+		binary.BigEndian.PutUint32(buf[off:off+4], uint32(len(r.Value)))
+		off += 4
+		copy(buf[off:], r.Value)
 	} else {
-		if err := binary.Write(&crcBuf, binary.BigEndian, nullLength); err != nil {
-			return 0, err
-		}
+		binary.BigEndian.PutUint32(buf[off:off+4], ^uint32(0))
 	}
 
-	checksum := crc32.Checksum(crcBuf.Bytes(), crcTable)
+	// CRC covers attributes through end of value — same region as before.
+	checksum := crc32.Checksum(buf[crcStart:total], crcTable)
+	binary.BigEndian.PutUint32(buf[20:24], checksum)
 
-	// length = bytes after the length field: offset + timestamp + crc32 +
-	// attributes + keyLength + key + valueLength + value.
-	length := int32(total - 4)
-
-	written := 0
-	if err := binary.Write(w, binary.BigEndian, length); err != nil {
-		return written, err
-	}
-	written += 4
-	if err := binary.Write(w, binary.BigEndian, r.Offset); err != nil {
-		return written, err
-	}
-	written += 8
-	if err := binary.Write(w, binary.BigEndian, r.Timestamp); err != nil {
-		return written, err
-	}
-	written += 8
-	if err := binary.Write(w, binary.BigEndian, checksum); err != nil {
-		return written, err
-	}
-	written += 4
-
-	// The CRC-covered region is written verbatim.
-	n, err := w.Write(crcBuf.Bytes())
-	written += n
-	if err != nil {
-		return written, err
-	}
-	return written, nil
+	return w.Write(buf)
 }
 
 // DecodeRecord reads a single record from r and returns it together with the
@@ -157,12 +135,13 @@ func (r *Record) Encode(w io.Writer) (int, error) {
 // returned. If the length field exceeds MaxRecordSize, ErrRecordTooLarge is
 // returned.
 func DecodeRecord(r io.Reader) (*Record, int, error) {
-	var length int32
-	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
+	var lenBuf [4]byte
+	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
 		return nil, 0, err
 	}
 	read := 4
 
+	length := int32(binary.BigEndian.Uint32(lenBuf[:]))
 	if length < 0 {
 		return nil, read, ErrCorruptRecord
 	}
@@ -178,60 +157,66 @@ func DecodeRecord(r io.Reader) (*Record, int, error) {
 	}
 	read += len(payload)
 
-	buf := bytes.NewReader(payload)
+	// Minimum body: offset(8) + timestamp(8) + crc(4) + attributes(1) +
+	// keyLength(4) + valueLength(4). Key/value payloads may be absent.
+	const minPayload = 8 + 8 + 4 + 1 + 4 + 4
+	if len(payload) < minPayload {
+		return nil, read, io.ErrUnexpectedEOF
+	}
 
+	off := 0
 	rec := &Record{}
-	if err := binary.Read(buf, binary.BigEndian, &rec.Offset); err != nil {
-		return nil, read, err
-	}
-	if err := binary.Read(buf, binary.BigEndian, &rec.Timestamp); err != nil {
-		return nil, read, err
-	}
 
-	var checksum uint32
-	if err := binary.Read(buf, binary.BigEndian, &checksum); err != nil {
-		return nil, read, err
-	}
+	rec.Offset = int64(binary.BigEndian.Uint64(payload[off : off+8]))
+	off += 8
+	rec.Timestamp = int64(binary.BigEndian.Uint64(payload[off : off+8]))
+	off += 8
+	checksum := binary.BigEndian.Uint32(payload[off : off+4])
+	off += 4
 
-	// The CRC-covered region starts at the attributes byte, which is the
-	// remaining unread portion of the payload.
-	crcRegion := payload[len(payload)-buf.Len():]
-	if crc32.Checksum(crcRegion, crcTable) != checksum {
+	// CRC-covered region starts at attributes and runs to the end of payload.
+	if crc32.Checksum(payload[off:], crcTable) != checksum {
 		return nil, read, ErrCorruptRecord
 	}
 
-	if err := binary.Read(buf, binary.BigEndian, &rec.Attributes); err != nil {
-		return nil, read, err
-	}
+	rec.Attributes = int8(payload[off])
+	off++
 
-	var keyLen int32
-	if err := binary.Read(buf, binary.BigEndian, &keyLen); err != nil {
-		return nil, read, err
+	if off+4 > len(payload) {
+		return nil, read, io.ErrUnexpectedEOF
 	}
-	if keyLen == nullLength {
+	keyLen := int32(binary.BigEndian.Uint32(payload[off : off+4]))
+	off += 4
+	switch {
+	case keyLen == nullLength:
 		rec.Key = nil
-	} else if keyLen < 0 {
+	case keyLen < 0:
 		return nil, read, ErrCorruptRecord
-	} else {
-		rec.Key = make([]byte, keyLen)
-		if _, err := io.ReadFull(buf, rec.Key); err != nil {
-			return nil, read, err
+	default:
+		if off+int(keyLen) > len(payload) {
+			return nil, read, io.ErrUnexpectedEOF
 		}
+		rec.Key = make([]byte, keyLen)
+		copy(rec.Key, payload[off:off+int(keyLen)])
+		off += int(keyLen)
 	}
 
-	var valueLen int32
-	if err := binary.Read(buf, binary.BigEndian, &valueLen); err != nil {
-		return nil, read, err
+	if off+4 > len(payload) {
+		return nil, read, io.ErrUnexpectedEOF
 	}
-	if valueLen == nullLength {
+	valueLen := int32(binary.BigEndian.Uint32(payload[off : off+4]))
+	off += 4
+	switch {
+	case valueLen == nullLength:
 		rec.Value = nil
-	} else if valueLen < 0 {
+	case valueLen < 0:
 		return nil, read, ErrCorruptRecord
-	} else {
-		rec.Value = make([]byte, valueLen)
-		if _, err := io.ReadFull(buf, rec.Value); err != nil {
-			return nil, read, err
+	default:
+		if off+int(valueLen) > len(payload) {
+			return nil, read, io.ErrUnexpectedEOF
 		}
+		rec.Value = make([]byte, valueLen)
+		copy(rec.Value, payload[off:off+int(valueLen)])
 	}
 
 	return rec, read, nil

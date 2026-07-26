@@ -213,8 +213,10 @@ func TestWithDefaults_zero_degerli_alanlari_doldurur(t *testing.T) {
 	if cfg.Log.IndexIntervalBytes != 4096 {
 		t.Errorf("Log.IndexIntervalBytes = %d, want 4096", cfg.Log.IndexIntervalBytes)
 	}
-	if cfg.Log.IndexMaxBytes != 10*1024*1024 {
-		t.Errorf("Log.IndexMaxBytes = %d, want 10485760", cfg.Log.IndexMaxBytes)
+	// IndexMaxBytes is now derived from SegmentBytes/IndexIntervalBytes:
+	// (134217728/4096 + 1) * 8 * 2 = 524304 (~512 KiB), clamped to [64 KiB, 10 MiB].
+	if cfg.Log.IndexMaxBytes != 524304 {
+		t.Errorf("Log.IndexMaxBytes = %d, want 524304", cfg.Log.IndexMaxBytes)
 	}
 	if cfg.Log.RetentionMs != 7*24*60*60*1000 {
 		t.Errorf("Log.RetentionMs = %d, want 604800000", cfg.Log.RetentionMs)
@@ -272,6 +274,7 @@ func TestWithDefaults_zaten_set_edilmis_degerleri_degistirmez(t *testing.T) {
 			DataDir:          "/custom/data",
 			MaxConnections:   500,
 			RequestTimeoutMs: 10000,
+			LogLevel:         "info",
 		},
 		Log: LogConfig{
 			SegmentBytes:       64 * 1024 * 1024,
@@ -327,6 +330,103 @@ func TestWithDefaults_zaten_set_edilmis_degerleri_degistirmez(t *testing.T) {
 	}
 	if len(cfg.Cluster.Brokers) != len(want.Cluster.Brokers) || cfg.Cluster.Brokers[0] != want.Cluster.Brokers[0] {
 		t.Errorf("Cluster changed: got %+v, want %+v", cfg.Cluster, want.Cluster)
+	}
+}
+
+func TestSegmentBytesTooLargeRejected(t *testing.T) {
+	cfg := &Config{
+		Log: LogConfig{
+			SegmentBytes: 5 << 30, // 5 GiB > 4 GiB (math.MaxUint32)
+		},
+	}
+	cfg.WithDefaults()
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate succeeded for segment_bytes > 4 GiB, want error")
+	}
+	if !strings.Contains(err.Error(), "segment_bytes") {
+		t.Errorf("error does not mention segment_bytes: %v", err)
+	}
+	if !strings.Contains(err.Error(), "uint32") {
+		t.Errorf("error does not mention uint32: %v", err)
+	}
+}
+
+func TestIndexMaxBytesDerived(t *testing.T) {
+	// segment_bytes=1 MiB, index_interval=64: a full segment yields at most
+	// 1<<20 / 64 + 1 = 16385 index entries. Each entry is 8 bytes and we double
+	// for headroom: 16385 * 8 * 2 = 262160, within [64 KiB, 10 MiB] clamp.
+	cfg := &Config{
+		Log: LogConfig{
+			SegmentBytes:       1 << 20,
+			IndexIntervalBytes: 64,
+		},
+	}
+	cfg.WithDefaults()
+
+	if cfg.Log.IndexMaxBytes != 262160 {
+		t.Errorf("IndexMaxBytes = %d, want 262160", cfg.Log.IndexMaxBytes)
+	}
+	// Sanity: the derived index must be large enough to index a full segment
+	// (entries * entrySize) without filling before SegmentBytes is reached.
+	maxEntries := cfg.Log.SegmentBytes/cfg.Log.IndexIntervalBytes + 1
+	required := maxEntries * 8
+	if cfg.Log.IndexMaxBytes < required {
+		t.Errorf("IndexMaxBytes %d < required %d (index fills before segment)",
+			cfg.Log.IndexMaxBytes, required)
+	}
+	// Sanity: the derived value is within the documented clamp bounds.
+	if cfg.Log.IndexMaxBytes < 64*1024 || cfg.Log.IndexMaxBytes > 10*1024*1024 {
+		t.Errorf("IndexMaxBytes %d outside [64 KiB, 10 MiB] clamp", cfg.Log.IndexMaxBytes)
+	}
+}
+
+func TestIndexMaxBytesDerived_clamps_to_min(t *testing.T) {
+	// Tiny segment with a huge interval: needed would fall below 64 KiB, so
+	// the lower clamp must apply.
+	cfg := &Config{
+		Log: LogConfig{
+			SegmentBytes:       1024,
+			IndexIntervalBytes: 4096,
+		},
+	}
+	cfg.WithDefaults()
+
+	if cfg.Log.IndexMaxBytes != 64*1024 {
+		t.Errorf("IndexMaxBytes = %d, want 64 KiB (min clamp)", cfg.Log.IndexMaxBytes)
+	}
+}
+
+func TestIndexMaxBytesDerived_clamps_to_max(t *testing.T) {
+	// Huge segment with a tiny interval: needed would exceed 10 MiB, so the
+	// upper clamp must apply.
+	cfg := &Config{
+		Log: LogConfig{
+			SegmentBytes:       1 << 30, // 1 GiB
+			IndexIntervalBytes: 1,
+		},
+	}
+	cfg.WithDefaults()
+
+	if cfg.Log.IndexMaxBytes != 10*1024*1024 {
+		t.Errorf("IndexMaxBytes = %d, want 10 MiB (max clamp)", cfg.Log.IndexMaxBytes)
+	}
+}
+
+func TestIndexMaxBytesDerived_explicit_value_preserved(t *testing.T) {
+	// An explicitly set IndexMaxBytes must not be overwritten by derivation.
+	cfg := &Config{
+		Log: LogConfig{
+			SegmentBytes:       1 << 20,
+			IndexIntervalBytes: 64,
+			IndexMaxBytes:      1 << 20, // 1 MiB, explicitly set
+		},
+	}
+	cfg.WithDefaults()
+
+	if cfg.Log.IndexMaxBytes != 1<<20 {
+		t.Errorf("IndexMaxBytes = %d, want 1 MiB (explicit value changed)", cfg.Log.IndexMaxBytes)
 	}
 }
 

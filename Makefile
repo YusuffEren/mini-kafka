@@ -18,7 +18,7 @@ lint:
 	./kontrol.sh
 
 bench:
-	go test ./benchmark/... -bench=. -benchmem -benchtime=10s
+	go run ./benchmark -out benchmark_results.json
 
 cover:
 	go test ./... -coverprofile=coverage.out
