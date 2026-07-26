@@ -105,6 +105,12 @@ type Producer struct {
 
 	// batch is used only when config.LingerMs > 0.
 	batch batcher
+
+	// batchFill tracks average batch fill ratio (bytes/BatchSize) across flushes
+	// when LingerMs > 0. Safe for concurrent flushBatch callers via batchFillMu.
+	batchFillMu  sync.Mutex
+	batchFillSum float64
+	batchFillN   int
 }
 
 // NewProducer constructs a Producer targeting the provided broker addresses.
@@ -300,6 +306,16 @@ func (p *Producer) flushBatch(tp topicPartition, pb *pendingBatch) {
 		return
 	}
 
+	// Record fill ratio: accumulated batch bytes / configured BatchSize.
+	// len(batch) in the harness sense is the byte length of the pending batch.
+	if p.config.BatchSize > 0 {
+		ratio := float64(pb.bytes) / float64(p.config.BatchSize)
+		p.batchFillMu.Lock()
+		p.batchFillSum += ratio
+		p.batchFillN++
+		p.batchFillMu.Unlock()
+	}
+
 	offsets, err := p.produceRecords(tp.topic, tp.partition, pb.records)
 	if err != nil {
 		for _, w := range pb.waiters {
@@ -469,6 +485,18 @@ func (p *Producer) produceRecords(topic string, partition int32, records []*stor
 		offsets[i] = partResp.BaseOffset + int64(i)
 	}
 	return offsets, nil
+}
+
+// AvgBatchFillRatio returns the mean batch fill ratio (batch bytes / BatchSize)
+// observed across all flushes since the Producer was created. Returns 0 when
+// no batched flush has occurred (LingerMs == 0 or no Send calls).
+func (p *Producer) AvgBatchFillRatio() float64 {
+	p.batchFillMu.Lock()
+	defer p.batchFillMu.Unlock()
+	if p.batchFillN == 0 {
+		return 0
+	}
+	return p.batchFillSum / float64(p.batchFillN)
 }
 
 // Close flushes any pending linger batches, terminates active connections, and

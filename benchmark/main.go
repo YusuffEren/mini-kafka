@@ -9,6 +9,8 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,6 +54,9 @@ type BenchmarkResult struct {
 	P95LatencyMs     float64 `json:"p95_latency_ms"`
 	P99LatencyMs     float64 `json:"p99_latency_ms"`
 	MaxLatencyMs     float64 `json:"max_latency_ms"`
+	// BatchFillRatio is set only for LingerMs > 0 scenarios (average of
+	// batch_bytes/BatchSize across flushes). Omitted from JSON otherwise.
+	BatchFillRatio *float64 `json:"batch_fill_ratio,omitempty"`
 }
 
 // Report is the top-level JSON document: the environment block followed by
@@ -63,17 +68,16 @@ type Report struct {
 
 func main() {
 	outDir := flag.String("out", "benchmark_results.json", "output JSON file path")
-	producers := flag.Int("producers", 1, "number of concurrent producer goroutines")
+	producersFlag := flag.String("producers", "1", "comma-separated concurrent producer counts, e.g. 1,4,16")
 	commit := flag.String("commit", "", "git commit SHA recorded with the results")
 	notes := flag.String("notes", "", "free-form notes recorded with the results")
+	md := flag.Bool("md", false, "print results as a Markdown table to stdout")
 	flag.Parse()
 
-	if *producers < 1 {
-		*producers = 1
-	}
+	producerCounts := parseProducerCounts(*producersFlag)
 
 	fmt.Println("🚀 Starting mini-kafka Benchmark Suite...")
-	fmt.Printf("   producers=%d  out=%s\n", *producers, *outDir)
+	fmt.Printf("   producers=%v  out=%s  md=%v\n", producerCounts, *outDir, *md)
 
 	dir, err := os.MkdirTemp("", "mini-kafka-bench-*")
 	if err != nil {
@@ -137,35 +141,46 @@ func main() {
 
 	var results []BenchmarkResult
 
-	// Scenario 1: Single Producer 1KB messages (acks=1)
-	res1 := runProducerBenchmark(addrStr, "Single Producer 1KB (acks=1)", 10000, 1024, client.DefaultProducerConfig(), *producers)
-	results = append(results, res1)
+	// Producer scenarios are repeated for each -producers value so the
+	// scaling curve (1 → 4 → 16) is visible in a single run.
+	for _, nProd := range producerCounts {
+		label := func(base string) string {
+			if len(producerCounts) == 1 {
+				return base
+			}
+			return fmt.Sprintf("%s [producers=%d]", base, nProd)
+		}
 
-	// Scenario 2: Message Size Impact (100B, 1KB, 10KB)
-	res2a := runProducerBenchmark(addrStr, "Producer 100B (acks=1)", 10000, 100, client.DefaultProducerConfig(), *producers)
-	res2b := runProducerBenchmark(addrStr, "Producer 10KB (acks=1)", 5000, 10240, client.DefaultProducerConfig(), *producers)
-	results = append(results, res2a, res2b)
+		// Scenario 1: Single Producer 1KB messages (acks=1)
+		res1 := runProducerBenchmark(addrStr, label("Single Producer 1KB (acks=1)"), 10000, 1024, client.DefaultProducerConfig(), nProd)
+		results = append(results, res1)
 
-	// Scenario 3: Consumer Throughput
+		// Scenario 2: Message Size Impact (100B, 1KB, 10KB)
+		res2a := runProducerBenchmark(addrStr, label("Producer 100B (acks=1)"), 10000, 100, client.DefaultProducerConfig(), nProd)
+		res2b := runProducerBenchmark(addrStr, label("Producer 10KB (acks=1)"), 5000, 10240, client.DefaultProducerConfig(), nProd)
+		results = append(results, res2a, res2b)
+
+		// Scenario 4: Acks Impact (acks=0 vs acks=all)
+		cfgAcks0 := client.DefaultProducerConfig()
+		cfgAcks0.Acks = 0
+		res4a := runProducerBenchmark(addrStr, label("Producer 1KB (acks=0)"), 10000, 1024, cfgAcks0, nProd)
+		cfgAcksAll := client.DefaultProducerConfig()
+		cfgAcksAll.Acks = -1
+		res4b := runProducerBenchmark(addrStr, label("Producer 1KB (acks=all)"), 10000, 1024, cfgAcksAll, nProd)
+		results = append(results, res4a, res4b)
+
+		// Scenario 5: Batching Impact (LingerMs=5 vs LingerMs=0)
+		cfgBatch := client.DefaultProducerConfig()
+		cfgBatch.LingerMs = 5
+		cfgBatch.BatchSize = 65536
+		res5a := runProducerBenchmark(addrStr, label("Producer 1KB (linger=5ms, batch=64KB)"), 10000, 1024, cfgBatch, nProd)
+		res5b := runProducerBenchmark(addrStr, label("Producer 1KB (linger=0ms, batch=16KB)"), 10000, 1024, client.DefaultProducerConfig(), nProd)
+		results = append(results, res5a, res5b)
+	}
+
+	// Scenario 3: Consumer Throughput (independent of producer count)
 	res3 := runConsumerBenchmark(addrStr, "Group Consumer Poll", 10000)
 	results = append(results, res3)
-
-	// Scenario 4: Acks Impact (acks=0 vs acks=all)
-	cfgAcks0 := client.DefaultProducerConfig()
-	cfgAcks0.Acks = 0
-	res4a := runProducerBenchmark(addrStr, "Producer 1KB (acks=0)", 10000, 1024, cfgAcks0, *producers)
-	cfgAcksAll := client.DefaultProducerConfig()
-	cfgAcksAll.Acks = -1
-	res4b := runProducerBenchmark(addrStr, "Producer 1KB (acks=all)", 10000, 1024, cfgAcksAll, *producers)
-	results = append(results, res4a, res4b)
-
-	// Scenario 5: Batching Impact (LingerMs=5 vs LingerMs=0)
-	cfgBatch := client.DefaultProducerConfig()
-	cfgBatch.LingerMs = 5
-	cfgBatch.BatchSize = 65536
-	res5a := runProducerBenchmark(addrStr, "Producer 1KB (linger=5ms, batch=64KB)", 10000, 1024, cfgBatch, *producers)
-	res5b := runProducerBenchmark(addrStr, "Producer 1KB (linger=0ms, batch=16KB)", 10000, 1024, client.DefaultProducerConfig(), *producers)
-	results = append(results, res5a, res5b)
 
 	report := Report{
 		Environment: env,
@@ -183,26 +198,120 @@ func main() {
 		os.Exit(1)
 	}
 
+	if *md {
+		printMarkdown(report)
+	}
+
 	fmt.Printf("\n✅ Benchmark completed! Results written to %s\n", *outDir)
 }
 
-// runProducerBenchmark drives `producers` goroutines that publish concurrently
-// to a single shared Producer (which is safe for concurrent use). The first 10%
-// of each goroutine's sends are treated as warmup and excluded from latency
-// statistics so that JIT warm-up, connection establishment and initial batch
-// sizing do not skew the percentiles.
+// parseProducerCounts parses a comma-separated list of positive integers.
+// Invalid or empty tokens are skipped; an empty result defaults to []int{1}.
+func parseProducerCounts(s string) []int {
+	parts := strings.Split(s, ",")
+	var out []int
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 {
+			continue
+		}
+		out = append(out, n)
+	}
+	if len(out) == 0 {
+		return []int{1}
+	}
+	return out
+}
+
+// printMarkdown renders the report as Markdown tables on stdout.
+// Latency values are printed as measured (no "<1" substitution).
+func printMarkdown(report Report) {
+	fmt.Println()
+	fmt.Println("## Ortam")
+	fmt.Println("| Alan | Değer |")
+	fmt.Println("|---|---|")
+	fmt.Printf("| GoVersion | %s |\n", report.Environment.GoVersion)
+	fmt.Printf("| GOOS | %s |\n", report.Environment.GOOS)
+	fmt.Printf("| GOARCH | %s |\n", report.Environment.GOARCH)
+	fmt.Printf("| CPU | %d |\n", report.Environment.NumCPU)
+	fmt.Printf("| Timestamp | %s |\n", report.Environment.Timestamp)
+	if report.Environment.CommitSHA != "" {
+		fmt.Printf("| CommitSHA | %s |\n", report.Environment.CommitSHA)
+	}
+	if report.Environment.Notes != "" {
+		fmt.Printf("| Notes | %s |\n", report.Environment.Notes)
+	}
+
+	hasFill := false
+	for _, r := range report.Results {
+		if r.BatchFillRatio != nil {
+			hasFill = true
+			break
+		}
+	}
+
+	fmt.Println()
+	fmt.Println("## Sonuçlar")
+	if hasFill {
+		fmt.Println("| Senaryo | Producers | Throughput (msg/s) | p50 | p95 | p99 | max | batch_fill_ratio |")
+		fmt.Println("|---|---|---|---|---|---|---|---|")
+	} else {
+		fmt.Println("| Senaryo | Producers | Throughput (msg/s) | p50 | p95 | p99 | max |")
+		fmt.Println("|---|---|---|---|---|---|---|")
+	}
+	for _, r := range report.Results {
+		// Print raw measured latencies (µs). Values < 1 µs stay as 0 or 0.xx —
+		// never rewrite them to "<1".
+		if hasFill {
+			fill := ""
+			if r.BatchFillRatio != nil {
+				fill = fmt.Sprintf("%.4f", *r.BatchFillRatio)
+			}
+			fmt.Printf("| %s | %d | %.2f | %s | %s | %s | %s | %s |\n",
+				r.Scenario,
+				r.Producers,
+				r.MsgPerSec,
+				formatLatency(r.P50LatencyUs),
+				formatLatency(r.P95LatencyUs),
+				formatLatency(r.P99LatencyUs),
+				formatLatency(r.MaxLatencyUs),
+				fill,
+			)
+		} else {
+			fmt.Printf("| %s | %d | %.2f | %s | %s | %s | %s |\n",
+				r.Scenario,
+				r.Producers,
+				r.MsgPerSec,
+				formatLatency(r.P50LatencyUs),
+				formatLatency(r.P95LatencyUs),
+				formatLatency(r.P99LatencyUs),
+				formatLatency(r.MaxLatencyUs),
+			)
+		}
+	}
+}
+
+// formatLatency prints a latency in microseconds without the "<1" rewrite.
+func formatLatency(us float64) string {
+	if us == float64(int64(us)) && us >= 1 {
+		return fmt.Sprintf("%.0f", us)
+	}
+	return fmt.Sprintf("%.3f", us)
+}
+
+// runProducerBenchmark drives `producers` goroutines that each own a dedicated
+// Producer (separate TCP connection). The first 10% of each goroutine's sends
+// are treated as warmup and excluded from latency statistics so that connection
+// establishment and initial batch sizing do not skew the percentiles.
 func runProducerBenchmark(addr, scenario string, count, payloadSize int, cfg client.ProducerConfig, producers int) BenchmarkResult {
 	fmt.Printf("Running: %s ... ", scenario)
 	if producers < 1 {
 		producers = 1
 	}
-
-	prod, err := client.NewProducer([]string{addr}, cfg)
-	if err != nil {
-		fmt.Printf("producer init err: %v\n", err)
-		return BenchmarkResult{Scenario: scenario, Producers: producers}
-	}
-	defer func() { _ = prod.Close() }()
 
 	payload := make([]byte, payloadSize)
 	for i := range payload {
@@ -232,7 +341,33 @@ func runProducerBenchmark(addr, scenario string, count, payloadSize int, cfg cli
 		allLatency []time.Duration
 		sendErrors int64
 		wg         sync.WaitGroup
+		// One Producer per goroutine — closed after wg.Wait.
+		prods = make([]*client.Producer, producers)
 	)
+
+	// Create all producers up front so a dial failure aborts cleanly before
+	// any Send work starts. Each Producer opens its own TCP connection.
+	for p := 0; p < producers; p++ {
+		prod, err := client.NewProducer([]string{addr}, cfg)
+		if err != nil {
+			// Close any already-created producers.
+			for i := 0; i < p; i++ {
+				if prods[i] != nil {
+					_ = prods[i].Close()
+				}
+			}
+			fmt.Printf("producer init err: %v\n", err)
+			return BenchmarkResult{Scenario: scenario, Producers: producers}
+		}
+		prods[p] = prod
+	}
+	defer func() {
+		for _, prod := range prods {
+			if prod != nil {
+				_ = prod.Close()
+			}
+		}
+	}()
 
 	start := time.Now()
 
@@ -240,6 +375,7 @@ func runProducerBenchmark(addr, scenario string, count, payloadSize int, cfg cli
 		wg.Add(1)
 		go func(pid int) {
 			defer wg.Done()
+			prod := prods[pid]
 
 			localCount := perProducer
 			if pid < remainder {
@@ -249,7 +385,7 @@ func runProducerBenchmark(addr, scenario string, count, payloadSize int, cfg cli
 			// invariant holds even when remainder goroutines send one extra.
 			localWarmup := warmupPerProducer
 			if pid < remainder {
-				localWarmup = (localCount) / 10
+				localWarmup = localCount / 10
 				if localWarmup < 1 {
 					localWarmup = 1
 				}
@@ -278,6 +414,24 @@ func runProducerBenchmark(addr, scenario string, count, payloadSize int, cfg cli
 	wg.Wait()
 
 	duration := time.Since(start)
+
+	// Average batch fill ratio across all per-goroutine producers (LingerMs > 0 only).
+	var batchFill *float64
+	if cfg.LingerMs > 0 {
+		var sum float64
+		var n int
+		for _, prod := range prods {
+			if prod == nil {
+				continue
+			}
+			sum += prod.AvgBatchFillRatio()
+			n++
+		}
+		if n > 0 {
+			avg := sum / float64(n)
+			batchFill = &avg
+		}
+	}
 
 	measured := len(allLatency)
 	warmupTotal := count - measured
@@ -314,22 +468,37 @@ func runProducerBenchmark(addr, scenario string, count, payloadSize int, cfg cli
 		P95LatencyMs:     p95us / 1000.0,
 		P99LatencyMs:     p99us / 1000.0,
 		MaxLatencyMs:     maxUs / 1000.0,
+		BatchFillRatio:   batchFill,
 	}
 
-	fmt.Printf("Done in %d ms (%.2f msg/sec, %.2f MB/sec, p50=%.3fms, p99=%.3fms, max=%.3fms, errors=%d)\n",
-		durMs, msgPerSec, mbPerSec, res.P50LatencyMs, res.P99LatencyMs, res.MaxLatencyMs, sendErrors)
+	fillNote := ""
+	if batchFill != nil {
+		fillNote = fmt.Sprintf(", batch_fill=%.4f", *batchFill)
+	}
+	fmt.Printf("Done in %d ms (%.2f msg/sec, %.2f MB/sec, p50=%.3fms, p99=%.3fms, max=%.3fms, errors=%d%s)\n",
+		durMs, msgPerSec, mbPerSec, res.P50LatencyMs, res.P99LatencyMs, res.MaxLatencyMs, sendErrors, fillNote)
 	return res
 }
 
-// runConsumerBenchmark measures group-consumer poll latency. The first 10% of
-// consumed records are treated as warmup and excluded from latency stats.
+// consumerPollSamples is the number of Poll calls used for latency percentiles
+// in the consumer benchmark. Multiple samples give a real p50/p95/p99 curve
+// instead of a single-point degenerate distribution.
+const consumerPollSamples = 100
+
+// runConsumerBenchmark measures group-consumer poll latency over many Poll
+// samples. Messages are seeded first; then consumerPollSamples Poll calls are
+// issued. The first 10% of successful Poll latencies are warmup.
 func runConsumerBenchmark(addr, scenario string, count int) BenchmarkResult {
 	fmt.Printf("Running: %s ... ", scenario)
 	topic := "bench-consumer-" + fmt.Sprintf("%d", time.Now().UnixNano())
 	ctx := context.Background()
 
-	// Seed data
-	prod, _ := client.NewProducer([]string{addr}, client.DefaultProducerConfig())
+	// Seed data — enough for many Poll rounds.
+	prod, err := client.NewProducer([]string{addr}, client.DefaultProducerConfig())
+	if err != nil {
+		fmt.Printf("producer init err: %v\n", err)
+		return BenchmarkResult{Scenario: scenario}
+	}
 	payload := make([]byte, 1024)
 	for i := 0; i < count; i++ {
 		_, _ = prod.Send(ctx, topic, int32(i%4), []byte(fmt.Sprintf("k-%d", i)), payload)
@@ -338,34 +507,38 @@ func runConsumerBenchmark(addr, scenario string, count int) BenchmarkResult {
 
 	cfg := client.DefaultGroupConsumerConfig()
 	cfg.AutoOffsetReset = "earliest"
-	gc, err := client.NewGroupConsumer([]string{addr}, "bench-group", []string{topic}, cfg)
+	// Cap MaxBytes so individual Polls return smaller batches and we get
+	// enough distinct samples for percentile stats.
+	cfg.MaxBytes = 32 * 1024
+	gc, err := client.NewGroupConsumer([]string{addr}, "bench-group-"+fmt.Sprintf("%d", time.Now().UnixNano()), []string{topic}, cfg)
 	if err != nil {
 		fmt.Printf("consumer init err: %v\n", err)
 		return BenchmarkResult{Scenario: scenario}
 	}
 	defer func() { _ = gc.Close() }()
 
-	warmupTarget := count / 10
-	if warmupTarget < 1 {
-		warmupTarget = 1
-	}
-
 	start := time.Now()
 	consumed := 0
 	var latencies []time.Duration
+	pollsDone := 0
 
-	for consumed < count {
+	for pollsDone < consumerPollSamples {
 		t0 := time.Now()
 		msgs, err := gc.Poll(ctx, 1*time.Second)
 		d := time.Since(t0)
-		if err != nil || len(msgs) == 0 {
+		if err != nil {
 			break
 		}
-		// Only record latency for the measured (post-warmup) portion.
-		if consumed >= warmupTarget {
-			latencies = append(latencies, d)
-		}
+		// Record every Poll latency (including empty) so the sample count
+		// reaches N; empty polls still reflect round-trip cost.
+		latencies = append(latencies, d)
+		pollsDone++
 		consumed += len(msgs)
+		if consumed >= count && len(msgs) == 0 {
+			// All seeded data drained and last polls are empty — still keep
+			// collecting until we hit consumerPollSamples for stable pXX.
+			continue
+		}
 	}
 
 	duration := time.Since(start)
@@ -374,7 +547,22 @@ func runConsumerBenchmark(addr, scenario string, count int) BenchmarkResult {
 		durMs = 1
 	}
 
-	measured := consumed - warmupTarget
+	// 10% of poll samples are warmup.
+	warmupPolls := len(latencies) / 10
+	if warmupPolls < 1 && len(latencies) > 1 {
+		warmupPolls = 1
+	}
+	measuredLats := latencies
+	if warmupPolls > 0 && warmupPolls < len(latencies) {
+		measuredLats = latencies[warmupPolls:]
+	}
+
+	// Approximate measured messages excluding a proportional warmup share.
+	warmupMsgs := 0
+	if len(latencies) > 0 {
+		warmupMsgs = consumed * warmupPolls / len(latencies)
+	}
+	measured := consumed - warmupMsgs
 	if measured < 0 {
 		measured = 0
 	}
@@ -382,16 +570,16 @@ func runConsumerBenchmark(addr, scenario string, count int) BenchmarkResult {
 	msgPerSec := float64(measured) / (float64(durMs) / 1000.0)
 	mbPerSec := (float64(measured*1024) / (1024.0 * 1024.0)) / (float64(durMs) / 1000.0)
 
-	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+	sort.Slice(measuredLats, func(i, j int) bool { return measuredLats[i] < measuredLats[j] })
 
-	p50us, p95us, p99us, maxUs := latencyStatsUs(latencies)
+	p50us, p95us, p99us, maxUs := latencyStatsUs(measuredLats)
 
 	res := BenchmarkResult{
 		Scenario:         scenario,
 		Producers:        1,
 		DurationMs:       durMs,
 		TotalMessages:    count,
-		WarmupMessages:   warmupTarget,
+		WarmupMessages:   warmupMsgs,
 		MeasuredMessages: measured,
 		MsgPerSec:        msgPerSec,
 		MBPerSec:         mbPerSec,
@@ -405,8 +593,8 @@ func runConsumerBenchmark(addr, scenario string, count int) BenchmarkResult {
 		MaxLatencyMs:     maxUs / 1000.0,
 	}
 
-	fmt.Printf("Done in %d ms (%.2f msg/sec, %.2f MB/sec, p50=%.3fms, p99=%.3fms, max=%.3fms)\n",
-		durMs, msgPerSec, mbPerSec, res.P50LatencyMs, res.P99LatencyMs, res.MaxLatencyMs)
+	fmt.Printf("Done in %d ms (%.2f msg/sec, %.2f MB/sec, p50=%.3fms, p99=%.3fms, max=%.3fms, polls=%d)\n",
+		durMs, msgPerSec, mbPerSec, res.P50LatencyMs, res.P99LatencyMs, res.MaxLatencyMs, pollsDone)
 	return res
 }
 
